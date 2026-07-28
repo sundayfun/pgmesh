@@ -31,13 +31,13 @@ SELECT id, tenant_id, name
 FROM users
 ORDER BY id;
 
--- name: ListUsersByID :many
+-- name: ListUsersByIDs :many
 -- kind: read
 -- shard: tenant(tenant_id)
 -- store: Users
 SELECT id, tenant_id, name
 FROM users
-WHERE id = ANY(@id::bigint[]);
+WHERE id = ANY(@ids::bigint[]);
 
 -- name: DeleteAllUsers :exec
 -- kind: write

@@ -82,9 +82,9 @@ func (q *readQueries) ListP2PMessagesByChat(ctx context.Context, arg *db.ListP2P
 	return rv0, nil
 }
 
-// ListUsersByID executes the generated ListUsersByID query.
-func (q *readQueries) ListUsersByID(ctx context.Context, id []int64) ([]*db.User, error) {
-	rv0, err := q.main.ListUsersByID(ctx, id)
+// ListUsersByIDs executes the generated ListUsersByIDs query.
+func (q *readQueries) ListUsersByIDs(ctx context.Context, ids []int64) ([]*db.User, error) {
+	rv0, err := q.main.ListUsersByIDs(ctx, ids)
 	if err != nil {
 		var zero0 []*db.User
 		return zero0, err

@@ -47,9 +47,9 @@ func TestSeparatePackageStoreAgainstPostgres(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, created, got)
 
-	listed, err := queries.Users().ListUsersByID(
+	listed, err := queries.Users().ListUsersByIDs(
 		t.Context(),
-		[]*store.ListUsersByIDShardParams{{
+		[]*store.ListUsersByIDsShardParams{{
 			ID:       created.ID,
 			TenantID: created.TenantID,
 		}},

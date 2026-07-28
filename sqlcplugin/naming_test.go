@@ -30,6 +30,25 @@ func TestStructName(t *testing.T) {
 	}
 }
 
+func TestSingular(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		want string
+	}{
+		{name: "ids", want: "id"},
+		{name: "user_ids", want: "user_id"},
+		{name: "categories", want: "category"},
+		{name: "statuses", want: "status"},
+		{name: "metadata", want: "metadata"},
+	}
+
+	for _, test := range tests {
+		assert.Equal(t, test.want, singular(test.name))
+	}
+}
+
 func TestRouteMethodName(t *testing.T) {
 	t.Parallel()
 

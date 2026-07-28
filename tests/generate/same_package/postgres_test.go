@@ -267,9 +267,9 @@ func TestPostgresTopologyIntegration(t *testing.T) {
 				h.insert(t, "shard1-primary", 241, 3, "odd-one")
 				h.insert(t, "shard1-primary", 243, 5, "odd-three")
 
-				users, err := h.queries.Users().ListUsersByID(
+				users, err := h.queries.Users().ListUsersByIDs(
 					t.Context(),
-					[]*fixture.ListUsersByIDShardParams{
+					[]*fixture.ListUsersByIDsShardParams{
 						{ID: 243, TenantID: 5},
 						{ID: 240, TenantID: 2},
 						{ID: 299, TenantID: 3},

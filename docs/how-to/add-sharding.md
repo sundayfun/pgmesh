@@ -127,8 +127,8 @@ share one copy operation.
 
 Routed `:many` queries with one list parameter similarly resolve each lookup
 item and issue one query per populated physical replica set. Their returned
-rows are matched by the list parameter's corresponding result field and
-restored to input-key order.
+rows are matched by a result field with the list parameter's exact name or its
+simple English singular form and restored to input-key order.
 
 ## Operational checklist
 

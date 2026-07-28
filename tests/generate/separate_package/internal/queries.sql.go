@@ -278,7 +278,7 @@ func (q *Queries) ListP2PMessagesByChat(ctx context.Context, arg *ListP2PMessage
 	return items, nil
 }
 
-const listUsersByID = `-- name: ListUsersByID :many
+const listUsersByIDs = `-- name: ListUsersByIDs :many
 SELECT id, tenant_id, name
 FROM users
 WHERE id = ANY($1::bigint[])
@@ -287,8 +287,8 @@ WHERE id = ANY($1::bigint[])
 // kind: read
 // shard: tenant(tenant_id)
 // store: Users
-func (q *Queries) ListUsersByID(ctx context.Context, id []int64) ([]*User, error) {
-	rows, err := q.db.Query(ctx, listUsersByID, id)
+func (q *Queries) ListUsersByIDs(ctx context.Context, ids []int64) ([]*User, error) {
+	rows, err := q.db.Query(ctx, listUsersByIDs, ids)
 	if err != nil {
 		return nil, err
 	}

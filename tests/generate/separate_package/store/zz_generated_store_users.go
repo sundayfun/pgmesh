@@ -12,8 +12,8 @@ import (
 	"sync"
 )
 
-// ListUsersByIDShardParams combines sqlc and routing-only shard parameters for ListUsersByID.
-type ListUsersByIDShardParams struct {
+// ListUsersByIDsShardParams combines sqlc and routing-only shard parameters for ListUsersByIDs.
+type ListUsersByIDsShardParams struct {
 	ID       int64
 	TenantID int64
 }
@@ -24,8 +24,8 @@ type UsersReader interface {
 	GetUser(ctx context.Context, arg *GetUserParams, storeOptions ...QueryOption) (*User, error)
 	// ListAllUsers executes the generated ListAllUsers query.
 	ListAllUsers(ctx context.Context, storeOptions ...QueryOption) ([]*User, error)
-	// ListUsersByID executes the generated ListUsersByID query.
-	ListUsersByID(ctx context.Context, arg []*ListUsersByIDShardParams, storeOptions ...QueryOption) ([]*User, error)
+	// ListUsersByIDs executes the generated ListUsersByIDs query.
+	ListUsersByIDs(ctx context.Context, arg []*ListUsersByIDsShardParams, storeOptions ...QueryOption) ([]*User, error)
 }
 
 // UsersWriter exposes write queries in the Users store group.
@@ -345,9 +345,9 @@ func (q *groupedMeshStore[SK]) ListAllUsers(ctx context.Context, storeOptions ..
 	return result, err
 }
 
-// ListUsersByID groups lookup values by physical shard and restores input-key result order.
-func (q *groupedMeshStore[SK]) ListUsersByID(ctx context.Context, arg []*ListUsersByIDShardParams, storeOptions ...QueryOption) (result []*db.User, err error) {
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "ListUsersByID", pgmesh.QueryKindRead)
+// ListUsersByIDs groups lookup values by physical shard and restores input-key result order.
+func (q *groupedMeshStore[SK]) ListUsersByIDs(ctx context.Context, arg []*ListUsersByIDsShardParams, storeOptions ...QueryOption) (result []*db.User, err error) {
+	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "ListUsersByIDs", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()
 
 	options := applyQueryOptions(storeOptions...)
@@ -364,13 +364,13 @@ func (q *groupedMeshStore[SK]) ListUsersByID(ctx context.Context, arg []*ListUse
 	orderedItems := make([]manyOrderItem, 0)
 	for inputIndex, item := range arg {
 		if item == nil {
-			err = fmt.Errorf("route ListUsersByID input %d: shard parameter is nil", inputIndex)
+			err = fmt.Errorf("route ListUsersByIDs input %d: shard parameter is nil", inputIndex)
 			return result, err
 		}
 		lookupValue := item.ID
 		lookupKey := any(lookupValue)
 		if lookupKey != nil && !reflect.ValueOf(lookupKey).Comparable() {
-			err = fmt.Errorf("route ListUsersByID input %d: lookup key type %T is not comparable", inputIndex, lookupKey)
+			err = fmt.Errorf("route ListUsersByIDs input %d: lookup key type %T is not comparable", inputIndex, lookupKey)
 			return result, err
 		}
 		var shardKey SK
@@ -379,7 +379,7 @@ func (q *groupedMeshStore[SK]) ListUsersByID(ctx context.Context, arg []*ListUse
 		}
 		shard, routeErr := q.store.mesh.Shard(shardKey)
 		if routeErr != nil {
-			err = fmt.Errorf("route ListUsersByID input %d: %w", inputIndex, routeErr)
+			err = fmt.Errorf("route ListUsersByIDs input %d: %w", inputIndex, routeErr)
 			return result, err
 		}
 		shardGroup := groupsByName[shard.Name()]
@@ -429,11 +429,11 @@ func (q *groupedMeshStore[SK]) ListUsersByID(ctx context.Context, arg []*ListUse
 		waitGroup.Go(func() {
 			switch {
 			case options.tx != nil:
-				groupResults[index].value, groupResults[index].err = shardGroup.shard.Write().WithTx(options.tx).ListUsersByID(ctx, shardGroup.args)
+				groupResults[index].value, groupResults[index].err = shardGroup.shard.Write().WithTx(options.tx).ListUsersByIDs(ctx, shardGroup.args)
 			case options.primary:
-				groupResults[index].value, groupResults[index].err = shardGroup.shard.Write().ListUsersByID(ctx, shardGroup.args)
+				groupResults[index].value, groupResults[index].err = shardGroup.shard.Write().ListUsersByIDs(ctx, shardGroup.args)
 			default:
-				groupResults[index].value, groupResults[index].err = shardGroup.shard.Read().ListUsersByID(ctx, shardGroup.args)
+				groupResults[index].value, groupResults[index].err = shardGroup.shard.Read().ListUsersByIDs(ctx, shardGroup.args)
 			}
 		})
 	}
@@ -442,7 +442,7 @@ func (q *groupedMeshStore[SK]) ListUsersByID(ctx context.Context, arg []*ListUse
 	groupErrors := make([]error, 0, len(groups))
 	for index, groupResult := range groupResults {
 		if groupResult.err != nil {
-			groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByID on replica set %q: %w", groups[index].shard.Name(), groupResult.err))
+			groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByIDs on replica set %q: %w", groups[index].shard.Name(), groupResult.err))
 		}
 	}
 	err = errors.Join(groupErrors...)
@@ -456,16 +456,16 @@ func (q *groupedMeshStore[SK]) ListUsersByID(ctx context.Context, arg []*ListUse
 		rowsByGroup[groups[groupIndex].shard.Name()] = rowsByKey
 		for resultIndex, row := range groupResult.value {
 			if row == nil {
-				groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByID on replica set %q returned nil row at result %d", groups[groupIndex].shard.Name(), resultIndex))
+				groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByIDs on replica set %q returned nil row at result %d", groups[groupIndex].shard.Name(), resultIndex))
 				continue
 			}
 			resultKey := any(row.ID)
 			if resultKey != nil && !reflect.ValueOf(resultKey).Comparable() {
-				groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByID on replica set %q result %d has non-comparable lookup key type %T", groups[groupIndex].shard.Name(), resultIndex, resultKey))
+				groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByIDs on replica set %q result %d has non-comparable lookup key type %T", groups[groupIndex].shard.Name(), resultIndex, resultKey))
 				continue
 			}
 			if _, requested := groups[groupIndex].requested[resultKey]; !requested {
-				groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByID on replica set %q result %d has an unrequested lookup key", groups[groupIndex].shard.Name(), resultIndex))
+				groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByIDs on replica set %q result %d has an unrequested lookup key", groups[groupIndex].shard.Name(), resultIndex))
 				continue
 			}
 			rowsByKey[resultKey] = append(rowsByKey[resultKey], row)

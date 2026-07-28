@@ -102,29 +102,32 @@ A routed `:many` query with exactly one one-dimensional list parameter is
 automatically grouped by physical shard:
 
 ```sql
--- name: ListAccountsByID :many
+-- name: ListAccountsByIDs :many
 -- kind: read
 -- shard: tenant(tenant_id)
 -- store: Accounts
 SELECT id, tenant_id, display_name
 FROM accounts
-WHERE id = ANY(@id::bigint[]);
+WHERE id = ANY(@ids::bigint[]);
 ```
 
-The list parameter must have a singular name such as `id`, and the query must
-return exactly one field with the same SQL name and Go type. The route may use a
-routing-only field. In that case pgmesh generates one input item containing
-both the scalar lookup value and the routing data:
+The query must return exactly one lookup field with the same Go type as the
+list elements. pgmesh first looks for the list parameter's exact SQL name and
+then its simple English singular form, such as `ids` to `id`, `user_ids` to
+`user_id`, or `categories` to `category`. Exact matches take precedence.
+
+The route may use a routing-only field. In that case pgmesh generates one input
+item containing both the singular lookup value and the routing data:
 
 ```go
-type ListAccountsByIDShardParams struct {
+type ListAccountsByIDsShardParams struct {
     ID       int64
     TenantID int64
 }
 
-accounts, err := queries.Accounts().ListAccountsByID(
+accounts, err := queries.Accounts().ListAccountsByIDs(
     ctx,
-    []*db.ListAccountsByIDShardParams{
+    []*db.ListAccountsByIDsShardParams{
         {ID: firstID, TenantID: firstTenantID},
         {ID: secondID, TenantID: secondTenantID},
     },

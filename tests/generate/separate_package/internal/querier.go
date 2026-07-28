@@ -52,7 +52,7 @@ type Querier interface {
 	// kind: read
 	// shard: tenant(tenant_id)
 	// store: Users
-	ListUsersByID(ctx context.Context, id []int64) ([]*User, error)
+	ListUsersByIDs(ctx context.Context, ids []int64) ([]*User, error)
 	// kind: write
 	// shard: tenant(tenant_id)
 	// store: Users

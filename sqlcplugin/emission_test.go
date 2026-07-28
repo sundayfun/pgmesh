@@ -987,13 +987,13 @@ func TestGenerateScalarizesGroupedManyResolverOperand(t *testing.T) {
 		Settings: &plugin.Settings{Engine: "postgresql", Codegen: &plugin.Codegen{Out: "db"}},
 		Catalog:  &plugin.Catalog{DefaultSchema: "public"},
 		Queries: []*plugin.Query{{
-			Name:     "ListUsersByID",
+			Name:     "ListUsersByIDs",
 			Cmd:      ":many",
 			Comments: []string{"kind: read", "shard: user(id)", "store: Users"},
 			Params: []*plugin.Parameter{{
 				Number: 1,
 				Column: &plugin.Column{
-					Name:        "id",
+					Name:        "ids",
 					Type:        int8Type,
 					NotNull:     true,
 					IsSqlcSlice: true,
@@ -1010,9 +1010,9 @@ func TestGenerateScalarizesGroupedManyResolverOperand(t *testing.T) {
 	assert.Contains(
 		t,
 		got,
-		"ListUsersByID(ctx context.Context, id []int64, storeOptions ...QueryOption) ([]int64, error)",
+		"ListUsersByIDs(ctx context.Context, ids []int64, storeOptions ...QueryOption) ([]int64, error)",
 	)
-	body := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListUsersByID")
+	body := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListUsersByIDs")
 	assert.Contains(t, body, "lookupValue := item")
 	assert.Contains(t, body, "shardKey = q.store.resolver.User(item)")
 	assert.Contains(t, body, "resultKey := any(row)")
@@ -1021,13 +1021,13 @@ func TestGenerateScalarizesGroupedManyResolverOperand(t *testing.T) {
 		Settings: &plugin.Settings{Engine: "postgresql", Codegen: &plugin.Codegen{Out: "db"}},
 		Catalog:  &plugin.Catalog{DefaultSchema: "public"},
 		Queries: []*plugin.Query{{
-			Name:     "ListUsersByID",
+			Name:     "ListUsersByIDs",
 			Cmd:      ":many",
 			Comments: []string{"kind: read", "shard: user(id)", "store: Users"},
 			Params: []*plugin.Parameter{{
 				Number: 1,
 				Column: &plugin.Column{
-					Name:        "id",
+					Name:        "ids",
 					Type:        int8Type,
 					NotNull:     true,
 					IsSqlcSlice: true,
@@ -1045,18 +1045,98 @@ func TestGenerateScalarizesGroupedManyResolverOperand(t *testing.T) {
 	structResponse, err := Generate(t.Context(), request)
 	require.NoError(t, err)
 	structSource := generatedSource(structResponse)
-	assert.Contains(t, structSource, "type ListUsersByIDShardParams struct {\n\tID int64\n}")
+	assert.Contains(t, structSource, "type ListUsersByIDsShardParams struct {\n\tID int64\n}")
 	assert.Contains(
 		t,
 		structSource,
-		"ListUsersByID(ctx context.Context, arg []*ListUsersByIDShardParams, storeOptions ...QueryOption)",
+		"ListUsersByIDs(ctx context.Context, arg []*ListUsersByIDsShardParams, storeOptions ...QueryOption)",
 	)
-	structBody := generatedMethodBody(t, structSource, "groupedMeshStore[SK]", "ListUsersByID")
+	structBody := generatedMethodBody(t, structSource, "groupedMeshStore[SK]", "ListUsersByIDs")
 	assert.Contains(
 		t,
 		structBody,
-		"ListUsersByID(ctx, &ListUsersByIDParams{ID: shardGroup.args})",
+		"ListUsersByIDs(ctx, &ListUsersByIDsParams{Ids: shardGroup.args})",
 	)
+}
+
+func TestGenerateGroupedManyMergesNullableResultKeys(t *testing.T) {
+	t.Parallel()
+
+	int8Type := &plugin.Identifier{Schema: "pg_catalog", Name: "int8"}
+	textType := &plugin.Identifier{Name: "text"}
+	request := func(emitPointers bool) *plugin.GenerateRequest {
+		pluginOptions := `{
+			"package":"db",
+			"sql_package":"pgx/v5",
+			"query_parameter_limit":1,
+			"emit_result_struct_pointers":true
+		}`
+		if emitPointers {
+			pluginOptions = `{
+				"package":"db",
+				"sql_package":"pgx/v5",
+				"query_parameter_limit":1,
+				"emit_result_struct_pointers":true,
+				"emit_pointers_for_null_types":true
+			}`
+		}
+		return &plugin.GenerateRequest{
+			Settings: &plugin.Settings{Engine: "postgresql", Codegen: &plugin.Codegen{Out: "db"}},
+			Catalog:  &plugin.Catalog{DefaultSchema: "public"},
+			Queries: []*plugin.Query{{
+				Name:     "ListMessagesByLocalIDs",
+				Cmd:      ":many",
+				Comments: []string{"kind: read", "shard: message(local_id)", "store: Messages"},
+				Params: []*plugin.Parameter{{
+					Number: 1,
+					Column: &plugin.Column{
+						Name:        "local_ids",
+						Type:        textType,
+						NotNull:     true,
+						IsSqlcSlice: true,
+					},
+				}},
+				Columns: []*plugin.Column{
+					{Name: "id", Type: int8Type, NotNull: true},
+					{Name: "local_id", Type: textType, NotNull: false},
+				},
+			}},
+			PluginOptions: []byte(pluginOptions),
+		}
+	}
+
+	t.Run("pointer null", func(t *testing.T) {
+		response, err := Generate(t.Context(), request(true))
+		require.NoError(t, err)
+
+		body := generatedMethodBody(
+			t,
+			generatedSource(response),
+			"groupedMeshStore[SK]",
+			"ListMessagesByLocalIDs",
+		)
+		assert.Contains(t, body, "resultLookupValue := row.LocalID")
+		assert.Contains(t, body, "if resultLookupValue == nil")
+		assert.Contains(t, body, "unkeyedRows = append(unkeyedRows, row)")
+		assert.Contains(t, body, "resultKey := any(*resultLookupValue)")
+		assert.Contains(t, body, "unkeyedRows...)")
+	})
+
+	t.Run("pgx null type", func(t *testing.T) {
+		response, err := Generate(t.Context(), request(false))
+		require.NoError(t, err)
+
+		body := generatedMethodBody(
+			t,
+			generatedSource(response),
+			"groupedMeshStore[SK]",
+			"ListMessagesByLocalIDs",
+		)
+		assert.Contains(t, body, "resultLookupValue := row.LocalID")
+		assert.Contains(t, body, "if !resultLookupValue.Valid")
+		assert.Contains(t, body, "resultKey := any(resultLookupValue.String)")
+		assert.Contains(t, body, "unkeyedRows...)")
+	})
 }
 
 func TestGenerateLeavesOtherManyShapesSingleShardRouted(t *testing.T) {
