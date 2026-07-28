@@ -57,7 +57,7 @@ func openDatabase(ctx context.Context) (*pgxpool.Pool, error) {
 }
 
 func createAccount(ctx context.Context, accounts sharded.AccountsWriter) (*sharded.Account, error) {
-	account, err := accounts.UpsertAccount(ctx, &sharded.UpsertAccountParams{
+	account, err := accounts.UpsertAccount(ctx, &sharded.UpsertAccountT{
 		ID:          1001,
 		TenantID:    42,
 		DisplayName: "single database",
@@ -73,7 +73,7 @@ func loadAndPrintAccount(
 	accounts sharded.AccountsReader,
 	account *sharded.Account,
 ) error {
-	loaded, err := accounts.GetAccount(ctx, &sharded.GetAccountParams{
+	loaded, err := accounts.GetAccount(ctx, &sharded.GetAccountT{
 		TenantID: account.TenantID,
 		ID:       account.ID,
 	})

@@ -187,7 +187,7 @@ func dualWriteToFutureShard(
 	tenantID int64,
 	accountID int64,
 ) error {
-	_, err := accounts.UpsertAccount(ctx, &sharded.UpsertAccountParams{
+	_, err := accounts.UpsertAccount(ctx, &sharded.UpsertAccountT{
 		ID:          accountID,
 		TenantID:    tenantID,
 		DisplayName: "mirrored write",
@@ -233,7 +233,7 @@ func updateInTransaction(
 
 	updated, err := accounts.UpdateAccountName(
 		ctx,
-		&sharded.UpdateAccountNameParams{
+		&sharded.UpdateAccountNameT{
 			TenantID:    tenantID,
 			ID:          accountID,
 			DisplayName: "transactional update",

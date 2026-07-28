@@ -7,6 +7,9 @@ import (
 	pgmesh "github.com/sundayfun/pgmesh"
 )
 
+// UpsertSettingT is the store parameter type for UpsertSetting.
+type UpsertSettingT = UpsertSettingParams
+
 // SettingsReader exposes read queries in the Settings store group.
 type SettingsReader interface {
 	// GetSetting executes the generated GetSetting query.
@@ -16,7 +19,7 @@ type SettingsReader interface {
 // SettingsWriter exposes write queries in the Settings store group.
 type SettingsWriter interface {
 	// UpsertSetting executes the generated UpsertSetting query.
-	UpsertSetting(ctx context.Context, arg *UpsertSettingParams, storeOptions ...QueryOption) (*ApplicationSetting, error)
+	UpsertSetting(ctx context.Context, arg *UpsertSettingT, storeOptions ...QueryOption) (*ApplicationSetting, error)
 }
 
 // Settings exposes all queries in its generated store group.
@@ -67,7 +70,7 @@ func (q *groupedMeshStore[SK]) GetSetting(ctx context.Context, key string, store
 }
 
 // UpsertSetting executes the generated query on its target shard.
-func (q *groupedMeshStore[SK]) UpsertSetting(ctx context.Context, arg *UpsertSettingParams, storeOptions ...QueryOption) (result *ApplicationSetting, err error) {
+func (q *groupedMeshStore[SK]) UpsertSetting(ctx context.Context, arg *UpsertSettingT, storeOptions ...QueryOption) (result *ApplicationSetting, err error) {
 	// Trace the query and record its returned error.
 	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Settings", "UpsertSetting", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()

@@ -14,7 +14,7 @@ func exerciseStores(
 	reports sharded.ReportsReader,
 	settings one.Settings,
 ) error {
-	account, err := accounts.UpsertAccount(ctx, &sharded.UpsertAccountParams{
+	account, err := accounts.UpsertAccount(ctx, &sharded.UpsertAccountT{
 		ID:          3001,
 		TenantID:    100,
 		DisplayName: "shard one",
@@ -24,7 +24,7 @@ func exerciseStores(
 	}
 	account, err = accounts.GetAccount(
 		ctx,
-		&sharded.GetAccountParams{TenantID: account.TenantID, ID: account.ID},
+		&sharded.GetAccountT{TenantID: account.TenantID, ID: account.ID},
 		sharded.ReadFromPrimary(),
 	)
 	if err != nil {
@@ -42,7 +42,7 @@ func exerciseStores(
 	}
 	fmt.Printf("tenant %d account count: %d\n", account.TenantID, count)
 
-	_, err = settings.UpsertSetting(ctx, &one.UpsertSettingParams{
+	_, err = settings.UpsertSetting(ctx, &one.UpsertSettingT{
 		Key:   "deployment_name",
 		Value: "pgmesh example",
 	})

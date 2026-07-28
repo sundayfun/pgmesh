@@ -7,18 +7,27 @@ import (
 	pgmesh "github.com/sundayfun/pgmesh"
 )
 
+// GetAccountT is the store parameter type for GetAccount.
+type GetAccountT = GetAccountParams
+
+// UpdateAccountNameT is the store parameter type for UpdateAccountName.
+type UpdateAccountNameT = UpdateAccountNameParams
+
+// UpsertAccountT is the store parameter type for UpsertAccount.
+type UpsertAccountT = UpsertAccountParams
+
 // AccountsReader exposes read queries in the Accounts store group.
 type AccountsReader interface {
 	// GetAccount executes the generated GetAccount query.
-	GetAccount(ctx context.Context, arg *GetAccountParams, storeOptions ...QueryOption) (*Account, error)
+	GetAccount(ctx context.Context, arg *GetAccountT, storeOptions ...QueryOption) (*Account, error)
 }
 
 // AccountsWriter exposes write queries in the Accounts store group.
 type AccountsWriter interface {
 	// UpdateAccountName executes the generated UpdateAccountName query.
-	UpdateAccountName(ctx context.Context, arg *UpdateAccountNameParams, storeOptions ...QueryOption) (*Account, error)
+	UpdateAccountName(ctx context.Context, arg *UpdateAccountNameT, storeOptions ...QueryOption) (*Account, error)
 	// UpsertAccount executes the generated UpsertAccount query.
-	UpsertAccount(ctx context.Context, arg *UpsertAccountParams, storeOptions ...QueryOption) (*Account, error)
+	UpsertAccount(ctx context.Context, arg *UpsertAccountT, storeOptions ...QueryOption) (*Account, error)
 }
 
 // Accounts exposes all queries in its generated store group.
@@ -35,7 +44,7 @@ func (q *meshStore[SK]) Accounts() Accounts {
 }
 
 // GetAccount executes the generated query on its target shard.
-func (q *groupedMeshStore[SK]) GetAccount(ctx context.Context, arg *GetAccountParams, storeOptions ...QueryOption) (result *Account, err error) {
+func (q *groupedMeshStore[SK]) GetAccount(ctx context.Context, arg *GetAccountT, storeOptions ...QueryOption) (result *Account, err error) {
 	// Trace the query and record its returned error.
 	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Accounts", "GetAccount", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()
@@ -72,7 +81,7 @@ func (q *groupedMeshStore[SK]) GetAccount(ctx context.Context, arg *GetAccountPa
 }
 
 // UpdateAccountName executes the generated query on its target shard.
-func (q *groupedMeshStore[SK]) UpdateAccountName(ctx context.Context, arg *UpdateAccountNameParams, storeOptions ...QueryOption) (result *Account, err error) {
+func (q *groupedMeshStore[SK]) UpdateAccountName(ctx context.Context, arg *UpdateAccountNameT, storeOptions ...QueryOption) (result *Account, err error) {
 	// Trace the query and record its returned error.
 	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Accounts", "UpdateAccountName", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()
@@ -104,7 +113,7 @@ func (q *groupedMeshStore[SK]) UpdateAccountName(ctx context.Context, arg *Updat
 }
 
 // UpsertAccount executes the generated query on its target shard.
-func (q *groupedMeshStore[SK]) UpsertAccount(ctx context.Context, arg *UpsertAccountParams, storeOptions ...QueryOption) (result *Account, err error) {
+func (q *groupedMeshStore[SK]) UpsertAccount(ctx context.Context, arg *UpsertAccountT, storeOptions ...QueryOption) (result *Account, err error) {
 	// Trace the query and record its returned error.
 	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Accounts", "UpsertAccount", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()
