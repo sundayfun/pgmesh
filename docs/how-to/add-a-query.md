@@ -96,6 +96,60 @@ models plus tables named by the SQL's source relations take precedence over
 models inferred only from SQL parameters; matching models within the same tier
 must produce compatible field names and Go types.
 
+### Route list lookups by item
+
+A routed `:many` query with exactly one one-dimensional list parameter is
+automatically grouped by physical shard:
+
+```sql
+-- name: ListAccountsByID :many
+-- kind: read
+-- shard: tenant(tenant_id)
+-- store: Accounts
+SELECT id, tenant_id, display_name
+FROM accounts
+WHERE id = ANY(@id::bigint[]);
+```
+
+The list parameter must have a singular name such as `id`, and the query must
+return exactly one field with the same SQL name and Go type. The route may use a
+routing-only field. In that case pgmesh generates one input item containing
+both the scalar lookup value and the routing data:
+
+```go
+type ListAccountsByIDShardParams struct {
+    ID       int64
+    TenantID int64
+}
+
+accounts, err := queries.Accounts().ListAccountsByID(
+    ctx,
+    []*db.ListAccountsByIDShardParams{
+        {ID: firstID, TenantID: firstTenantID},
+        {ID: secondID, TenantID: secondTenantID},
+    },
+)
+```
+
+pgmesh resolves every item before dispatch, deduplicates repeated lookup keys
+within the same physical shard, and issues one concurrent query per populated
+replica set. Returned rows are matched through the required lookup field and
+restored to first-occurrence input order; missing keys add no row, and multiple
+rows for one key retain their SQL order. Lookup values must be comparable Go
+values.
+
+Normal reads use each shard's replica route, while `ReadFromPrimary()` uses
+primaries. `WithTx()` is accepted only when every item maps to one physical
+shard. A routing failure dispatches nothing. Once queries have started, every
+group is attempted; any shard or result-validation failure returns a joined,
+replica-set-labeled error and no rows.
+
+This inference changes the generated Store signature of an existing routed
+`:many` query that has exactly one list parameter. The underlying sqlc method
+is unchanged. Queries with scalar parameters, multiple SQL parameters,
+multidimensional arrays, `:batchmany`, or `shard: all()` retain their existing
+routing behavior.
+
 ### Run a query on every physical shard
 
 Use the reserved route `shard: all()` when a query must run once per physical

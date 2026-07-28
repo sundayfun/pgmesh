@@ -125,6 +125,11 @@ Routed `:copyfrom` inputs are resolved and grouped by physical replica set
 before any copy begins. Multiple virtual shards placed on the same replica set
 share one copy operation.
 
+Routed `:many` queries with one list parameter similarly resolve each lookup
+item and issue one query per populated physical replica set. Their returned
+rows are matched by the list parameter's corresponding result field and
+restored to input-key order.
+
 ## Operational checklist
 
 - Apply compatible schema to every physical database before routing traffic.

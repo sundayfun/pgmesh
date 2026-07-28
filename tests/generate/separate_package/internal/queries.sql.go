@@ -278,6 +278,35 @@ func (q *Queries) ListP2PMessagesByChat(ctx context.Context, arg *ListP2PMessage
 	return items, nil
 }
 
+const listUsersByID = `-- name: ListUsersByID :many
+SELECT id, tenant_id, name
+FROM users
+WHERE id = ANY($1::bigint[])
+`
+
+// kind: read
+// shard: tenant(tenant_id)
+// store: Users
+func (q *Queries) ListUsersByID(ctx context.Context, id []int64) ([]*User, error) {
+	rows, err := q.db.Query(ctx, listUsersByID, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*User
+	for rows.Next() {
+		var i User
+		if err := rows.Scan(&i.ID, &i.TenantID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateUserName = `-- name: UpdateUserName :one
 UPDATE users
 SET name = $3

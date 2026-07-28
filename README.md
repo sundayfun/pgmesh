@@ -23,7 +23,8 @@ pgmesh is a sqlc process plugin plus a small Go runtime. Together they provide:
 - mandatory query groups for keeping large generated stores navigable;
 - replica reads with explicit primary reads when consistency requires them;
 - logical-key routing through virtual shards to physical databases;
-- explicit scatter queries and physical-shard grouping for `COPY FROM`;
+- explicit scatter queries, grouped list lookups, and physical-shard grouping
+  for `COPY FROM`;
 - shard-pinned transactions;
 - synchronous write mirrors for staged shard expansion; and
 - OpenTelemetry instrumentation and structured debug logging.

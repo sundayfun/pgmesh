@@ -11,6 +11,7 @@
 | Invalid or misplaced store annotation | `store` is unexported, malformed, or appears after documentation | Use `-- store: ExportedGroup` directly after optional `shard` metadata |
 | Unknown shard operand | A routing-only operand matches neither a SQL parameter nor a field on the query's generated table model | Use the table column name, respecting the configured sqlc schema and rename options |
 | Conflicting route types | The same resolver method is inferred with incompatible operand types | Align the SQL parameter types or use different route names |
+| Grouped `:many` result key is missing or ambiguous | A routed one-list query cannot associate returned rows with lookup items | Return exactly one field whose SQL name and Go type match the singular list parameter |
 | A sharded store contains an unsharded query | One generated store mixes routing models | Add shard metadata or move the model and queries to another generated package |
 | Generated code does not compile | sqlc and plugin options differ | Align pointer, rename, override, package, and parameter-limit options |
 
@@ -72,10 +73,10 @@ partition them explicitly in application code.
 
 ## A special operation reports a cross-shard transaction
 
-`shard: all()` cannot run through one transaction. Routed `:copyfrom` can use
-`WithTx` only when every input row resolves to the same physical shard. In both
-cases pgmesh returns `pgmesh.ErrCrossShardTransaction` before dispatching any
-database operation.
+`shard: all()` cannot run through one transaction. Routed list lookups and
+`:copyfrom` calls can use `WithTx` only when every input resolves to the same
+physical shard. In both cases pgmesh returns
+`pgmesh.ErrCrossShardTransaction` before dispatching any database operation.
 
 ## A scatter or grouped copy partially committed
 

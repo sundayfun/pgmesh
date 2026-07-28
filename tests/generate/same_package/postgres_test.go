@@ -260,6 +260,36 @@ func TestPostgresTopologyIntegration(t *testing.T) {
 			},
 		},
 		{
+			name: "grouped many routes lookup values and restores input order",
+			run: func(t *testing.T, h *postgresCase) {
+				h.insert(t, "shard0-primary", 240, 2, "even-zero")
+				h.insert(t, "shard0-primary", 242, 4, "even-two")
+				h.insert(t, "shard1-primary", 241, 3, "odd-one")
+				h.insert(t, "shard1-primary", 243, 5, "odd-three")
+
+				users, err := h.queries.Users().ListUsersByID(
+					t.Context(),
+					[]*fixture.ListUsersByIDShardParams{
+						{ID: 243, TenantID: 5},
+						{ID: 240, TenantID: 2},
+						{ID: 299, TenantID: 3},
+						{ID: 241, TenantID: 3},
+						{ID: 242, TenantID: 4},
+						{ID: 240, TenantID: 2},
+					},
+					fixture.ReadFromPrimary(),
+				)
+				require.NoError(t, err)
+				require.Len(t, users, 4)
+				assert.Equal(t, []int64{243, 240, 241, 242}, []int64{
+					users[0].ID,
+					users[1].ID,
+					users[2].ID,
+					users[3].ID,
+				})
+			},
+		},
+		{
 			name: "all-shards reads merge and writes affect every physical shard",
 			run: func(t *testing.T, h *postgresCase) {
 				h.insert(t, "shard0-primary", 260, 2, "scatter")

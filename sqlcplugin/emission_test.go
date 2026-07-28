@@ -834,6 +834,294 @@ func TestGenerateWrapsRoutingOnlyShardOperand(t *testing.T) {
 	)
 }
 
+func TestGenerateGroupsListValuedManyByPhysicalShard(t *testing.T) {
+	t.Parallel()
+
+	int8Type := &plugin.Identifier{Schema: "pg_catalog", Name: "int8"}
+	textType := &plugin.Identifier{Schema: "pg_catalog", Name: "text"}
+	users := &plugin.Identifier{Schema: "public", Name: "users"}
+	response, err := Generate(t.Context(), &plugin.GenerateRequest{
+		Settings: &plugin.Settings{Engine: "postgresql", Codegen: &plugin.Codegen{Out: "db"}},
+		Catalog: &plugin.Catalog{
+			DefaultSchema: "public",
+			Schemas: []*plugin.Schema{{
+				Name: "public",
+				Tables: []*plugin.Table{{
+					Rel: users,
+					Columns: []*plugin.Column{
+						{Name: "id", Type: int8Type, NotNull: true, Table: users},
+						{Name: "tenant_id", Type: int8Type, NotNull: true, Table: users},
+						{Name: "name", Type: textType, NotNull: true, Table: users},
+					},
+				}},
+			}},
+		},
+		Queries: []*plugin.Query{
+			{
+				Name:     "GetUser",
+				Cmd:      ":one",
+				Comments: []string{"kind: read", "shard: tenant(tenant_id)", "store: Users"},
+				Params: []*plugin.Parameter{
+					{Number: 1, Column: &plugin.Column{Name: "tenant_id", Type: int8Type, NotNull: true}},
+					{Number: 2, Column: &plugin.Column{Name: "id", Type: int8Type, NotNull: true}},
+				},
+				Columns: []*plugin.Column{
+					{Name: "id", Type: int8Type, NotNull: true, Table: users},
+					{Name: "tenant_id", Type: int8Type, NotNull: true, Table: users},
+					{Name: "name", Type: textType, NotNull: true, Table: users},
+				},
+			},
+			{
+				Name:     "ListUsersByID",
+				Cmd:      ":many",
+				Comments: []string{"kind: read", "shard: tenant(tenant_id)", "store: Users"},
+				Params: []*plugin.Parameter{{
+					Number: 1,
+					Column: &plugin.Column{
+						Name:      "id",
+						Type:      int8Type,
+						NotNull:   true,
+						IsArray:   true,
+						ArrayDims: 1,
+					},
+				}},
+				Columns: []*plugin.Column{
+					{Name: "id", Type: int8Type, NotNull: true, Table: users},
+					{Name: "tenant_id", Type: int8Type, NotNull: true, Table: users},
+					{Name: "name", Type: textType, NotNull: true, Table: users},
+				},
+			},
+		},
+		PluginOptions: []byte(`{
+			"package":"db",
+			"sql_package":"pgx/v5",
+			"query_parameter_limit":1,
+			"emit_params_struct_pointers":true,
+			"emit_result_struct_pointers":true
+		}`),
+	})
+	require.NoError(t, err)
+
+	got := generatedSource(response)
+	assert.Contains(
+		t,
+		got,
+		"type ListUsersByIDShardParams struct {\n\tID       int64\n\tTenantID int64\n}",
+	)
+	assert.Contains(
+		t,
+		got,
+		"ListUsersByID(ctx context.Context, arg []*ListUsersByIDShardParams, storeOptions ...QueryOption) ([]*User, error)",
+	)
+	assert.Contains(t, got, "Tenant(tenantID int64) SK")
+	body := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListUsersByID")
+	assert.Contains(t, body, "if item == nil")
+	assert.Contains(t, body, "lookupValue := item.ID")
+	assert.Contains(t, body, "shardKey = q.store.resolver.Tenant(item.TenantID)")
+	assert.Contains(t, body, "groupsByName[shard.Name()]")
+	assert.Contains(t, body, "shardGroup.args = append(shardGroup.args, lookupValue)")
+	assert.Contains(t, body, "shardGroup.shard.Read().ListUsersByID(ctx, shardGroup.args)")
+	assert.Contains(t, body, "resultKey := any(row.ID)")
+	assert.Contains(t, body, "rowsByGroup[orderedItem.shardName][orderedItem.key]")
+	assert.Contains(t, body, "pgmesh.ErrCrossShardTransaction")
+	assert.Contains(t, body, "reflect.ValueOf(lookupKey).Comparable()")
+
+	response, err = Generate(t.Context(), &plugin.GenerateRequest{
+		Settings: &plugin.Settings{Engine: "postgresql", Codegen: &plugin.Codegen{Out: "db"}},
+		Catalog: &plugin.Catalog{
+			DefaultSchema: "public",
+			Schemas: []*plugin.Schema{{
+				Name: "public",
+				Tables: []*plugin.Table{{
+					Rel: users,
+					Columns: []*plugin.Column{
+						{Name: "id", Type: int8Type, NotNull: true, Table: users},
+						{Name: "tenant_id", Type: int8Type, NotNull: true, Table: users},
+						{Name: "name", Type: textType, NotNull: true, Table: users},
+					},
+				}},
+			}},
+		},
+		Queries: []*plugin.Query{{
+			Name:     "ListUsersByID",
+			Cmd:      ":many",
+			Comments: []string{"kind: read", "shard: tenant(tenant_id)", "store: Users"},
+			Params: []*plugin.Parameter{{
+				Number: 1,
+				Column: &plugin.Column{
+					Name:      "id",
+					Type:      int8Type,
+					NotNull:   true,
+					IsArray:   true,
+					ArrayDims: 1,
+				},
+			}},
+			Columns: []*plugin.Column{
+				{Name: "id", Type: int8Type, NotNull: true, Table: users},
+				{Name: "tenant_id", Type: int8Type, NotNull: true, Table: users},
+				{Name: "name", Type: textType, NotNull: true, Table: users},
+			},
+		}},
+		PluginOptions: []byte(`{
+			"package":"db",
+			"sql_package":"pgx/v5",
+			"query_parameter_limit":1
+		}`),
+	})
+	require.NoError(t, err)
+	valueSource := generatedSource(response)
+	assert.Contains(
+		t,
+		valueSource,
+		"ListUsersByID(ctx context.Context, arg []ListUsersByIDShardParams, storeOptions ...QueryOption)",
+	)
+	valueBody := generatedMethodBody(t, valueSource, "groupedMeshStore[SK]", "ListUsersByID")
+	assert.NotContains(t, valueBody, "if item == nil")
+}
+
+func TestGenerateScalarizesGroupedManyResolverOperand(t *testing.T) {
+	t.Parallel()
+
+	int8Type := &plugin.Identifier{Schema: "pg_catalog", Name: "int8"}
+	response, err := Generate(t.Context(), &plugin.GenerateRequest{
+		Settings: &plugin.Settings{Engine: "postgresql", Codegen: &plugin.Codegen{Out: "db"}},
+		Catalog:  &plugin.Catalog{DefaultSchema: "public"},
+		Queries: []*plugin.Query{{
+			Name:     "ListUsersByID",
+			Cmd:      ":many",
+			Comments: []string{"kind: read", "shard: user(id)", "store: Users"},
+			Params: []*plugin.Parameter{{
+				Number: 1,
+				Column: &plugin.Column{
+					Name:        "id",
+					Type:        int8Type,
+					NotNull:     true,
+					IsSqlcSlice: true,
+				},
+			}},
+			Columns: []*plugin.Column{{Name: "id", Type: int8Type, NotNull: true}},
+		}},
+		PluginOptions: []byte(`{"package":"db","sql_package":"pgx/v5","query_parameter_limit":1}`),
+	})
+	require.NoError(t, err)
+
+	got := generatedSource(response)
+	assert.Contains(t, got, "User(iD int64) SK")
+	assert.Contains(
+		t,
+		got,
+		"ListUsersByID(ctx context.Context, id []int64, storeOptions ...QueryOption) ([]int64, error)",
+	)
+	body := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListUsersByID")
+	assert.Contains(t, body, "lookupValue := item")
+	assert.Contains(t, body, "shardKey = q.store.resolver.User(item)")
+	assert.Contains(t, body, "resultKey := any(row)")
+
+	request := &plugin.GenerateRequest{
+		Settings: &plugin.Settings{Engine: "postgresql", Codegen: &plugin.Codegen{Out: "db"}},
+		Catalog:  &plugin.Catalog{DefaultSchema: "public"},
+		Queries: []*plugin.Query{{
+			Name:     "ListUsersByID",
+			Cmd:      ":many",
+			Comments: []string{"kind: read", "shard: user(id)", "store: Users"},
+			Params: []*plugin.Parameter{{
+				Number: 1,
+				Column: &plugin.Column{
+					Name:        "id",
+					Type:        int8Type,
+					NotNull:     true,
+					IsSqlcSlice: true,
+				},
+			}},
+			Columns: []*plugin.Column{{Name: "id", Type: int8Type, NotNull: true}},
+		}},
+		PluginOptions: []byte(`{
+			"package":"db",
+			"sql_package":"pgx/v5",
+			"query_parameter_limit":0,
+			"emit_params_struct_pointers":true
+		}`),
+	}
+	structResponse, err := Generate(t.Context(), request)
+	require.NoError(t, err)
+	structSource := generatedSource(structResponse)
+	assert.Contains(t, structSource, "type ListUsersByIDShardParams struct {\n\tID int64\n}")
+	assert.Contains(
+		t,
+		structSource,
+		"ListUsersByID(ctx context.Context, arg []*ListUsersByIDShardParams, storeOptions ...QueryOption)",
+	)
+	structBody := generatedMethodBody(t, structSource, "groupedMeshStore[SK]", "ListUsersByID")
+	assert.Contains(
+		t,
+		structBody,
+		"ListUsersByID(ctx, &ListUsersByIDParams{ID: shardGroup.args})",
+	)
+}
+
+func TestGenerateLeavesOtherManyShapesSingleShardRouted(t *testing.T) {
+	t.Parallel()
+
+	int8Type := &plugin.Identifier{Schema: "pg_catalog", Name: "int8"}
+	response, err := Generate(t.Context(), &plugin.GenerateRequest{
+		Settings: &plugin.Settings{Engine: "postgresql", Codegen: &plugin.Codegen{Out: "db"}},
+		Catalog:  &plugin.Catalog{DefaultSchema: "public"},
+		Queries: []*plugin.Query{
+			{
+				Name:     "ListTenantUsersByID",
+				Cmd:      ":many",
+				Comments: []string{"kind: read", "shard: tenant(tenant_id)", "store: Users"},
+				Params: []*plugin.Parameter{
+					{
+						Number: 1,
+						Column: &plugin.Column{
+							Name:      "id",
+							Type:      int8Type,
+							NotNull:   true,
+							IsArray:   true,
+							ArrayDims: 1,
+						},
+					},
+					{Number: 2, Column: &plugin.Column{Name: "tenant_id", Type: int8Type, NotNull: true}},
+				},
+				Columns: []*plugin.Column{{Name: "id", Type: int8Type, NotNull: true}},
+			},
+			{
+				Name:     "ListUsersByIDMatrix",
+				Cmd:      ":many",
+				Comments: []string{"kind: read", "shard: user(id)", "store: Users"},
+				Params: []*plugin.Parameter{{
+					Number: 1,
+					Column: &plugin.Column{
+						Name:      "id",
+						Type:      int8Type,
+						NotNull:   true,
+						IsArray:   true,
+						ArrayDims: 2,
+					},
+				}},
+				Columns: []*plugin.Column{{Name: "id", Type: int8Type, NotNull: true}},
+			},
+		},
+		PluginOptions: []byte(`{
+			"package":"db",
+			"sql_package":"pgx/v5",
+			"query_parameter_limit":1,
+			"emit_params_struct_pointers":true
+		}`),
+	})
+	require.NoError(t, err)
+
+	got := generatedSource(response)
+	assert.NotContains(t, got, "manyShardGroup")
+	tenantBody := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListTenantUsersByID")
+	assert.Contains(t, tenantBody, "shardKey = q.store.resolver.Tenant(arg.TenantID)")
+	assert.Contains(t, tenantBody, "return shard.Read().ListTenantUsersByID(ctx, arg)")
+	matrixBody := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListUsersByIDMatrix")
+	assert.Contains(t, matrixBody, "shardKey = q.store.resolver.User(id)")
+	assert.Contains(t, matrixBody, "return shard.Read().ListUsersByIDMatrix(ctx, id)")
+}
+
 func TestGenerateUsesRenamedModelFieldForRoutingOnlyShardOperand(t *testing.T) {
 	t.Parallel()
 
@@ -1153,6 +1441,24 @@ func TestGenerateRejectsInvalidRoutingConfigurations(t *testing.T) {
 			PluginOptions: []byte(`{"package":"db","sql_package":"pgx/v5"}`),
 		}
 	}
+	groupedMany := func(columns ...*plugin.Column) *plugin.Query {
+		return &plugin.Query{
+			Name:     "ListByID",
+			Cmd:      ":many",
+			Comments: []string{"kind: read", "shard: entity(id)", "store: Entities"},
+			Params: []*plugin.Parameter{{
+				Number: 1,
+				Column: &plugin.Column{
+					Name:      "id",
+					Type:      int8Type,
+					NotNull:   true,
+					IsArray:   true,
+					ArrayDims: 1,
+				},
+			}},
+			Columns: columns,
+		}
+	}
 
 	tests := []struct {
 		name    string
@@ -1189,6 +1495,42 @@ func TestGenerateRejectsInvalidRoutingConfigurations(t *testing.T) {
 				Columns: []*plugin.Column{{Name: "id", Type: int8Type, NotNull: true}},
 			}),
 			want: "grouped routing is supported only for :copyfrom",
+		},
+		{
+			name:    "grouped many missing result key",
+			request: base(groupedMany(&plugin.Column{Name: "other_id", Type: int8Type, NotNull: true})),
+			want:    `result must expose lookup key "id"`,
+		},
+		{
+			name:    "grouped many result key type mismatch",
+			request: base(groupedMany(&plugin.Column{Name: "id", Type: textType, NotNull: true})),
+			want:    `result key "id" has Go type string, want int64`,
+		},
+		{
+			name: "grouped many ambiguous result key",
+			request: base(groupedMany(
+				&plugin.Column{Name: "id", Type: int8Type, NotNull: true},
+				&plugin.Column{Name: "id", Type: int8Type, NotNull: true},
+			)),
+			want: `result exposes multiple fields for lookup key "id"`,
+		},
+		{
+			name: "grouped many unnamed list parameter",
+			request: base(&plugin.Query{
+				Name:     "ListByID",
+				Cmd:      ":many",
+				Comments: []string{"kind: read", "shard: entity(id)", "store: Entities"},
+				Params: []*plugin.Parameter{{
+					Number: 1,
+					Column: &plugin.Column{
+						Type:        int8Type,
+						NotNull:     true,
+						IsSqlcSlice: true,
+					},
+				}},
+				Columns: []*plugin.Column{{Name: "id", Type: int8Type, NotNull: true}},
+			}),
+			want: "list parameter must have a name",
 		},
 		{
 			name: "conflicting route signatures",

@@ -49,6 +49,10 @@ type Querier interface {
 	// shard: messageKey(user_id, to_user_or_group_id, in_group)
 	// store: QueryMessage
 	ListP2PMessagesByChat(ctx context.Context, arg *ListP2PMessagesByChatParams) ([]*Message, error)
+	// kind: read
+	// shard: tenant(tenant_id)
+	// store: Users
+	ListUsersByID(ctx context.Context, id []int64) ([]*User, error)
 	// kind: write
 	// shard: tenant(tenant_id)
 	// store: Users

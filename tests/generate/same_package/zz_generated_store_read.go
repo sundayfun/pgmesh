@@ -80,3 +80,13 @@ func (q *readQueries) ListP2PMessagesByChat(ctx context.Context, arg *ListP2PMes
 	}
 	return rv0, nil
 }
+
+// ListUsersByID executes the generated ListUsersByID query.
+func (q *readQueries) ListUsersByID(ctx context.Context, id []int64) ([]*User, error) {
+	rv0, err := q.main.ListUsersByID(ctx, id)
+	if err != nil {
+		var zero0 []*User
+		return zero0, err
+	}
+	return rv0, nil
+}

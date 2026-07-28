@@ -55,8 +55,8 @@ round-robin replica reads, primary fallback, forced-primary reads, virtual-shard
 write routing, synchronous mirrors, transaction pinning, mirror suppression in
 transactions, real pgx `ErrNoRows` mirror handling, nullable/network/range
 scanning, separate-package generation, physical-shard scatter, grouped
-`COPY FROM` routing and mirror fan-out, and the deliberate lack of mirror
-fan-out for generated batch writes.
+list-lookup routing and result ordering, grouped `COPY FROM` routing and mirror
+fan-out, and the deliberate lack of mirror fan-out for generated batch writes.
 
 Run the complete local validation with:
 

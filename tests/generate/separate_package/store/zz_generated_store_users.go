@@ -8,8 +8,15 @@ import (
 	"fmt"
 	pgmesh "github.com/sundayfun/pgmesh"
 	db "github.com/sundayfun/pgmesh/tests/generate/separate_package/internal"
+	"reflect"
 	"sync"
 )
+
+// ListUsersByIDShardParams combines sqlc and routing-only shard parameters for ListUsersByID.
+type ListUsersByIDShardParams struct {
+	ID       int64
+	TenantID int64
+}
 
 // UsersReader exposes read queries in the Users store group.
 type UsersReader interface {
@@ -17,6 +24,8 @@ type UsersReader interface {
 	GetUser(ctx context.Context, arg *GetUserParams, storeOptions ...QueryOption) (*User, error)
 	// ListAllUsers executes the generated ListAllUsers query.
 	ListAllUsers(ctx context.Context, storeOptions ...QueryOption) ([]*User, error)
+	// ListUsersByID executes the generated ListUsersByID query.
+	ListUsersByID(ctx context.Context, arg []*ListUsersByIDShardParams, storeOptions ...QueryOption) ([]*User, error)
 }
 
 // UsersWriter exposes write queries in the Users store group.
@@ -332,6 +341,143 @@ func (q *groupedMeshStore[SK]) ListAllUsers(ctx context.Context, storeOptions ..
 	}
 	for _, shardResult := range shardResults {
 		result = append(result, shardResult.value...)
+	}
+	return result, err
+}
+
+// ListUsersByID groups lookup values by physical shard and restores input-key result order.
+func (q *groupedMeshStore[SK]) ListUsersByID(ctx context.Context, arg []*ListUsersByIDShardParams, storeOptions ...QueryOption) (result []*db.User, err error) {
+	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "ListUsersByID", pgmesh.QueryKindRead)
+	defer func() { querySpan.End(err) }()
+
+	options := applyQueryOptions(storeOptions...)
+	type manyShardGroup struct {
+		shard     *pgmesh.Shard[*readQueries, *queryStore]
+		args      []int64
+		requested map[any]struct{}
+	}
+	type manyOrderItem struct {
+		shardName string
+		key       any
+	}
+	groupsByName := make(map[string]*manyShardGroup)
+	orderedItems := make([]manyOrderItem, 0)
+	for inputIndex, item := range arg {
+		if item == nil {
+			err = fmt.Errorf("route ListUsersByID input %d: shard parameter is nil", inputIndex)
+			return result, err
+		}
+		lookupValue := item.ID
+		lookupKey := any(lookupValue)
+		if lookupKey != nil && !reflect.ValueOf(lookupKey).Comparable() {
+			err = fmt.Errorf("route ListUsersByID input %d: lookup key type %T is not comparable", inputIndex, lookupKey)
+			return result, err
+		}
+		var shardKey SK
+		if q.store.resolver != nil {
+			shardKey = q.store.resolver.Tenant(item.TenantID)
+		}
+		shard, routeErr := q.store.mesh.Shard(shardKey)
+		if routeErr != nil {
+			err = fmt.Errorf("route ListUsersByID input %d: %w", inputIndex, routeErr)
+			return result, err
+		}
+		shardGroup := groupsByName[shard.Name()]
+		if shardGroup == nil {
+			shardGroup = &manyShardGroup{shard: shard, args: make([]int64, 0), requested: make(map[any]struct{})}
+			groupsByName[shard.Name()] = shardGroup
+		}
+		if _, exists := shardGroup.requested[lookupKey]; exists {
+			continue
+		}
+		shardGroup.requested[lookupKey] = struct{}{}
+		shardGroup.args = append(shardGroup.args, lookupValue)
+		orderedItems = append(orderedItems, manyOrderItem{shardName: shard.Name(), key: lookupKey})
+	}
+
+	groups := make([]*manyShardGroup, 0, len(groupsByName))
+	for _, shard := range q.store.mesh.AllShards() {
+		if shardGroup := groupsByName[shard.Name()]; shardGroup != nil {
+			groups = append(groups, shardGroup)
+		}
+	}
+	if options.tx != nil && len(groups) > 1 {
+		querySpan.SetMultiRoute(pgmesh.RouteModeTransaction)
+		err = pgmesh.ErrCrossShardTransaction
+		return result, err
+	}
+
+	mode := pgmesh.RouteModeRead
+	if options.primary {
+		mode = pgmesh.RouteModePrimary
+	}
+	if options.tx != nil {
+		mode = pgmesh.RouteModeTransaction
+	}
+	querySpan.SetMultiRoute(mode)
+	if len(groups) == 0 {
+		return result, err
+	}
+
+	type manyResult struct {
+		value []*db.User
+		err   error
+	}
+	groupResults := make([]manyResult, len(groups))
+	var waitGroup sync.WaitGroup
+	for index, shardGroup := range groups {
+		waitGroup.Go(func() {
+			switch {
+			case options.tx != nil:
+				groupResults[index].value, groupResults[index].err = shardGroup.shard.Write().WithTx(options.tx).ListUsersByID(ctx, shardGroup.args)
+			case options.primary:
+				groupResults[index].value, groupResults[index].err = shardGroup.shard.Write().ListUsersByID(ctx, shardGroup.args)
+			default:
+				groupResults[index].value, groupResults[index].err = shardGroup.shard.Read().ListUsersByID(ctx, shardGroup.args)
+			}
+		})
+	}
+	waitGroup.Wait()
+
+	groupErrors := make([]error, 0, len(groups))
+	for index, groupResult := range groupResults {
+		if groupResult.err != nil {
+			groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByID on replica set %q: %w", groups[index].shard.Name(), groupResult.err))
+		}
+	}
+	err = errors.Join(groupErrors...)
+	if err != nil {
+		return result, err
+	}
+
+	rowsByGroup := make(map[string]map[any][]*db.User, len(groups))
+	for groupIndex, groupResult := range groupResults {
+		rowsByKey := make(map[any][]*db.User)
+		rowsByGroup[groups[groupIndex].shard.Name()] = rowsByKey
+		for resultIndex, row := range groupResult.value {
+			if row == nil {
+				groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByID on replica set %q returned nil row at result %d", groups[groupIndex].shard.Name(), resultIndex))
+				continue
+			}
+			resultKey := any(row.ID)
+			if resultKey != nil && !reflect.ValueOf(resultKey).Comparable() {
+				groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByID on replica set %q result %d has non-comparable lookup key type %T", groups[groupIndex].shard.Name(), resultIndex, resultKey))
+				continue
+			}
+			if _, requested := groups[groupIndex].requested[resultKey]; !requested {
+				groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByID on replica set %q result %d has an unrequested lookup key", groups[groupIndex].shard.Name(), resultIndex))
+				continue
+			}
+			rowsByKey[resultKey] = append(rowsByKey[resultKey], row)
+		}
+	}
+	err = errors.Join(groupErrors...)
+	if err != nil {
+		return result, err
+	}
+
+	for _, orderedItem := range orderedItems {
+		result = append(result, rowsByGroup[orderedItem.shardName][orderedItem.key]...)
 	}
 	return result, err
 }

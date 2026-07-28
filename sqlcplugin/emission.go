@@ -50,6 +50,7 @@ func generateWrapper(
 	imports.add(defaultContext)
 	imports.add(defaultErrorsPackage)
 	imports.add(defaultFMT)
+	imports.add(defaultReflect)
 	imports.add(defaultSlog)
 	imports.add(defaultSync)
 	imports.add(defaultMetric)
@@ -225,7 +226,7 @@ func writeStoreGroup(out *bytes.Buffer, opts *options, group *storeGroup) {
 	out.WriteString("}\n\n")
 
 	for index := range group.queries {
-		writeMeshStoreQueryMethod(out, &group.queries[index])
+		writeMeshStoreQueryMethod(out, opts, &group.queries[index])
 	}
 }
 
@@ -680,13 +681,16 @@ func writeStoreConfiguration(
 	out.WriteString("}\n\n")
 }
 
-func writeMeshStoreQueryMethod(out *bytes.Buffer, query *generatedQuery) {
+func writeMeshStoreQueryMethod(out *bytes.Buffer, opts *options, query *generatedQuery) {
 	switch query.shardMode {
 	case shardModeAll:
 		writeAllShardsQueryMethod(out, query)
 		return
 	case shardModeGroupedCopy:
 		writeGroupedCopyQueryMethod(out, query)
+		return
+	case shardModeGroupedMany:
+		writeGroupedManyQueryMethod(out, opts, query)
 		return
 	}
 
@@ -806,6 +810,281 @@ func writeMeshStoreQueryMethod(out *bytes.Buffer, query *generatedQuery) {
 		fmt.Fprintf(out, "\treturn target.%s(%s)\n", query.methodName, args)
 	}
 	out.WriteString("}\n\n")
+}
+
+func writeGroupedManyQueryMethod(
+	out *bytes.Buffer,
+	opts *options,
+	query *generatedQuery,
+) {
+	receiverType := defaultGroupType
+	store := defaultReceiverName + ".store"
+	spec := query.groupedMany
+	resultSignature, resultNames, errName := namedResultsSignature(
+		query.storeParams,
+		query.results,
+		defaultReceiverName,
+		"storeOptions",
+	)
+	fmt.Fprintf(
+		out,
+		"// %s groups lookup values by physical shard and restores input-key result order.\n",
+		query.methodName,
+	)
+	fmt.Fprintf(
+		out,
+		"func (%s *%s[SK]) %s(%s)%s {\n",
+		defaultReceiverName,
+		receiverType,
+		query.methodName,
+		storeParamsSignature(query.storeParams),
+		resultSignature,
+	)
+	fmt.Fprintf(
+		out,
+		"\tctx, querySpan := %s.mesh.StartSpan(ctx, %q, %q, %s)\n",
+		store,
+		query.store,
+		query.methodName,
+		queryKindConstant(query.kind),
+	)
+	fmt.Fprintf(out, "\tdefer func() { querySpan.End(%s) }()\n\n", errName)
+	out.WriteString("\toptions := applyQueryOptions(storeOptions...)\n")
+	out.WriteString("\ttype manyShardGroup struct {\n")
+	fmt.Fprintf(
+		out,
+		"\t\tshard *pgmesh.Shard[*%s, *%s]\n",
+		defaultReadType,
+		defaultStoreType,
+	)
+	fmt.Fprintf(out, "\t\targs []%s\n", spec.elementType)
+	out.WriteString("\t\trequested map[any]struct{}\n")
+	out.WriteString("\t}\n")
+	out.WriteString("\ttype manyOrderItem struct {\n")
+	out.WriteString("\t\tshardName string\n")
+	out.WriteString("\t\tkey any\n")
+	out.WriteString("\t}\n")
+	out.WriteString("\tgroupsByName := make(map[string]*manyShardGroup)\n")
+	out.WriteString("\torderedItems := make([]manyOrderItem, 0)\n")
+	inputName := query.storeParams[1].name
+	fmt.Fprintf(out, "\tfor inputIndex, item := range %s {\n", inputName)
+	if spec.itemIsPointer {
+		out.WriteString("\t\tif item == nil {\n")
+		fmt.Fprintf(
+			out,
+			"\t\t\t%s = fmt.Errorf(%q, inputIndex)\n",
+			errName,
+			"route "+query.methodName+" input %d: shard parameter is nil",
+		)
+		fmt.Fprintf(out, "\t\t\treturn %s\n", strings.Join(resultNames, ", "))
+		out.WriteString("\t\t}\n")
+	}
+	lookupExpression := "item"
+	if query.shardArgs != nil {
+		lookupExpression = "item." + spec.lookupField
+	}
+	fmt.Fprintf(out, "\t\tlookupValue := %s\n", lookupExpression)
+	out.WriteString("\t\tlookupKey := any(lookupValue)\n")
+	out.WriteString("\t\tif lookupKey != nil && !reflect.ValueOf(lookupKey).Comparable() {\n")
+	fmt.Fprintf(
+		out,
+		"\t\t\t%s = fmt.Errorf(%q, inputIndex, lookupKey)\n",
+		errName,
+		"route "+query.methodName+" input %d: lookup key type %T is not comparable",
+	)
+	fmt.Fprintf(out, "\t\t\treturn %s\n", strings.Join(resultNames, ", "))
+	out.WriteString("\t\t}\n")
+	out.WriteString("\t\tvar shardKey SK\n")
+	fmt.Fprintf(out, "\t\tif %s.resolver != nil {\n", store)
+	routeArgs := make([]string, 0, len(query.route.operands))
+	for _, operand := range query.route.operands {
+		expression := strings.Replace(operand.expression, "arg.", "item.", 1)
+		if operand.dbName == spec.lookupDBName && !operand.external {
+			expression = lookupExpression
+		}
+		routeArgs = append(routeArgs, expression)
+	}
+	fmt.Fprintf(
+		out,
+		"\t\t\tshardKey = %s.resolver.%s(%s)\n",
+		store,
+		query.route.methodName,
+		strings.Join(routeArgs, ", "),
+	)
+	out.WriteString("\t\t}\n")
+	fmt.Fprintf(out, "\t\tshard, routeErr := %s.mesh.Shard(shardKey)\n", store)
+	out.WriteString("\t\tif routeErr != nil {\n")
+	fmt.Fprintf(
+		out,
+		"\t\t\t%s = fmt.Errorf(%q, inputIndex, routeErr)\n",
+		errName,
+		"route "+query.methodName+" input %d: %w",
+	)
+	fmt.Fprintf(out, "\t\t\treturn %s\n", strings.Join(resultNames, ", "))
+	out.WriteString("\t\t}\n")
+	out.WriteString("\t\tshardGroup := groupsByName[shard.Name()]\n")
+	out.WriteString("\t\tif shardGroup == nil {\n")
+	fmt.Fprintf(
+		out,
+		"\t\t\tshardGroup = &manyShardGroup{shard: shard, args: make([]%s, 0), requested: make(map[any]struct{})}\n",
+		spec.elementType,
+	)
+	out.WriteString("\t\t\tgroupsByName[shard.Name()] = shardGroup\n")
+	out.WriteString("\t\t}\n")
+	out.WriteString("\t\tif _, exists := shardGroup.requested[lookupKey]; exists { continue }\n")
+	out.WriteString("\t\tshardGroup.requested[lookupKey] = struct{}{}\n")
+	out.WriteString("\t\tshardGroup.args = append(shardGroup.args, lookupValue)\n")
+	out.WriteString("\t\torderedItems = append(orderedItems, manyOrderItem{shardName: shard.Name(), key: lookupKey})\n")
+	out.WriteString("\t}\n\n")
+
+	out.WriteString("\tgroups := make([]*manyShardGroup, 0, len(groupsByName))\n")
+	fmt.Fprintf(out, "\tfor _, shard := range %s.mesh.AllShards() {\n", store)
+	out.WriteString("\t\tif shardGroup := groupsByName[shard.Name()]; shardGroup != nil {\n")
+	out.WriteString("\t\t\tgroups = append(groups, shardGroup)\n")
+	out.WriteString("\t\t}\n")
+	out.WriteString("\t}\n")
+	out.WriteString("\tif options.tx != nil && len(groups) > 1 {\n")
+	out.WriteString("\t\tquerySpan.SetMultiRoute(pgmesh.RouteModeTransaction)\n")
+	fmt.Fprintf(out, "\t\t%s = pgmesh.ErrCrossShardTransaction\n", errName)
+	fmt.Fprintf(out, "\t\treturn %s\n", strings.Join(resultNames, ", "))
+	out.WriteString("\t}\n\n")
+
+	if query.kind == queryKindRead {
+		out.WriteString("\tmode := pgmesh.RouteModeRead\n")
+		out.WriteString("\tif options.primary { mode = pgmesh.RouteModePrimary }\n")
+	} else {
+		out.WriteString("\tmode := pgmesh.RouteModePrimary\n")
+	}
+	out.WriteString("\tif options.tx != nil { mode = pgmesh.RouteModeTransaction }\n")
+	out.WriteString("\tquerySpan.SetMultiRoute(mode)\n")
+	fmt.Fprintf(out, "\tif len(groups) == 0 { return %s }\n\n", strings.Join(resultNames, ", "))
+
+	fmt.Fprintf(out, "\ttype manyResult struct {\n\t\tvalue %s\n\t\terr error\n\t}\n", query.results[0])
+	out.WriteString("\tgroupResults := make([]manyResult, len(groups))\n")
+	out.WriteString("\tvar waitGroup sync.WaitGroup\n")
+	out.WriteString("\tfor index, shardGroup := range groups {\n")
+	out.WriteString("\t\twaitGroup.Go(func() {\n")
+	sqlcArg := groupedManySQLCArgument(opts, query, "shardGroup.args")
+	if query.kind == queryKindRead {
+		out.WriteString("\t\t\tswitch {\n")
+		out.WriteString("\t\t\tcase options.tx != nil:\n")
+		fmt.Fprintf(
+			out,
+			"\t\t\t\tgroupResults[index].value, groupResults[index].err = shardGroup.shard.Write().WithTx(options.tx).%s(ctx, %s)\n",
+			query.methodName,
+			sqlcArg,
+		)
+		out.WriteString("\t\t\tcase options.primary:\n")
+		fmt.Fprintf(
+			out,
+			"\t\t\t\tgroupResults[index].value, groupResults[index].err = shardGroup.shard.Write().%s(ctx, %s)\n",
+			query.methodName,
+			sqlcArg,
+		)
+		out.WriteString("\t\t\tdefault:\n")
+		fmt.Fprintf(
+			out,
+			"\t\t\t\tgroupResults[index].value, groupResults[index].err = shardGroup.shard.Read().%s(ctx, %s)\n",
+			query.methodName,
+			sqlcArg,
+		)
+		out.WriteString("\t\t\t}\n")
+	} else {
+		out.WriteString("\t\t\ttarget := shardGroup.shard.Write()\n")
+		out.WriteString("\t\t\tif options.tx != nil { target = target.WithTx(options.tx) }\n")
+		fmt.Fprintf(
+			out,
+			"\t\t\tgroupResults[index].value, groupResults[index].err = target.%s(ctx, %s)\n",
+			query.methodName,
+			sqlcArg,
+		)
+	}
+	out.WriteString("\t\t})\n")
+	out.WriteString("\t}\n")
+	out.WriteString("\twaitGroup.Wait()\n\n")
+
+	out.WriteString("\tgroupErrors := make([]error, 0, len(groups))\n")
+	out.WriteString("\tfor index, groupResult := range groupResults {\n")
+	out.WriteString("\t\tif groupResult.err != nil {\n")
+	fmt.Fprintf(
+		out,
+		"\t\t\tgroupErrors = append(groupErrors, fmt.Errorf(%q, groups[index].shard.Name(), groupResult.err))\n",
+		"query "+query.methodName+" on replica set %q: %w",
+	)
+	out.WriteString("\t\t}\n")
+	out.WriteString("\t}\n")
+	fmt.Fprintf(out, "\t%s = errors.Join(groupErrors...)\n", errName)
+	fmt.Fprintf(out, "\tif %s != nil { return %s }\n\n", errName, strings.Join(resultNames, ", "))
+
+	rowType := strings.TrimPrefix(query.results[0], "[]")
+	fmt.Fprintf(out, "\trowsByGroup := make(map[string]map[any][]%s, len(groups))\n", rowType)
+	out.WriteString("\tfor groupIndex, groupResult := range groupResults {\n")
+	fmt.Fprintf(out, "\t\trowsByKey := make(map[any][]%s)\n", rowType)
+	out.WriteString("\t\trowsByGroup[groups[groupIndex].shard.Name()] = rowsByKey\n")
+	out.WriteString("\t\tfor resultIndex, row := range groupResult.value {\n")
+	if spec.resultIsStruct && query.ret.emitPointer {
+		out.WriteString("\t\t\tif row == nil {\n")
+		fmt.Fprintf(
+			out,
+			"\t\t\t\tgroupErrors = append(groupErrors, fmt.Errorf(%q, groups[groupIndex].shard.Name(), resultIndex))\n",
+			"query "+query.methodName+" on replica set %q returned nil row at result %d",
+		)
+		out.WriteString("\t\t\t\tcontinue\n")
+		out.WriteString("\t\t\t}\n")
+	}
+	resultKeyExpression := "row"
+	if spec.resultIsStruct {
+		resultKeyExpression = "row." + spec.resultKeyField
+	}
+	fmt.Fprintf(out, "\t\t\tresultKey := any(%s)\n", resultKeyExpression)
+	out.WriteString("\t\t\tif resultKey != nil && !reflect.ValueOf(resultKey).Comparable() {\n")
+	fmt.Fprintf(
+		out,
+		"\t\t\t\tgroupErrors = append(groupErrors, fmt.Errorf(%q, groups[groupIndex].shard.Name(), resultIndex, resultKey))\n",
+		"query "+query.methodName+" on replica set %q result %d has non-comparable lookup key type %T",
+	)
+	out.WriteString("\t\t\t\tcontinue\n")
+	out.WriteString("\t\t\t}\n")
+	out.WriteString("\t\t\tif _, requested := groups[groupIndex].requested[resultKey]; !requested {\n")
+	fmt.Fprintf(
+		out,
+		"\t\t\t\tgroupErrors = append(groupErrors, fmt.Errorf(%q, groups[groupIndex].shard.Name(), resultIndex))\n",
+		"query "+query.methodName+" on replica set %q result %d has an unrequested lookup key",
+	)
+	out.WriteString("\t\t\t\tcontinue\n")
+	out.WriteString("\t\t\t}\n")
+	out.WriteString("\t\t\trowsByKey[resultKey] = append(rowsByKey[resultKey], row)\n")
+	out.WriteString("\t\t}\n")
+	out.WriteString("\t}\n")
+	fmt.Fprintf(out, "\t%s = errors.Join(groupErrors...)\n", errName)
+	fmt.Fprintf(out, "\tif %s != nil { return %s }\n\n", errName, strings.Join(resultNames, ", "))
+	out.WriteString("\tfor _, orderedItem := range orderedItems {\n")
+	fmt.Fprintf(
+		out,
+		"\t\t%s = append(%s, rowsByGroup[orderedItem.shardName][orderedItem.key]...)\n",
+		resultNames[0],
+		resultNames[0],
+	)
+	out.WriteString("\t}\n")
+	fmt.Fprintf(out, "\treturn %s\n", strings.Join(resultNames, ", "))
+	out.WriteString("}\n\n")
+}
+
+func groupedManySQLCArgument(opts *options, query *generatedQuery, groupedArgs string) string {
+	if query.arg.structType == nil {
+		return groupedArgs
+	}
+	prefix := ""
+	if query.arg.emitPointer {
+		prefix = "&"
+	}
+	return fmt.Sprintf(
+		"%s%s{%s: %s}",
+		prefix,
+		targetName(opts, query.arg.structType.name),
+		query.groupedMany.lookupField,
+		groupedArgs,
+	)
 }
 
 func writeAllShardsQueryMethod(out *bytes.Buffer, query *generatedQuery) {

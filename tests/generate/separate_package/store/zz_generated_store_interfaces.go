@@ -63,6 +63,8 @@ type readQuerier interface {
 	ListP2PMessageIDsByChat(ctx context.Context, arg *db.ListP2PMessageIDsByChatParams) ([]interface{}, error)
 	// ListP2PMessagesByChat executes the generated ListP2PMessagesByChat query.
 	ListP2PMessagesByChat(ctx context.Context, arg *db.ListP2PMessagesByChatParams) ([]*db.Message, error)
+	// ListUsersByID executes the generated ListUsersByID query.
+	ListUsersByID(ctx context.Context, id []int64) ([]*db.User, error)
 }
 
 // writeQuerier exposes generated write queries.
