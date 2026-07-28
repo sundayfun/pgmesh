@@ -525,7 +525,7 @@ func TestGeneratedGroupedManyPartitionsAndRestoresInputOrder(t *testing.T) {
 		nil,
 	)
 
-	users, err := store.Users().ListUsersByIDs(t.Context(), []*ListUsersByIDsShardParams{
+	users, err := store.Users().ListUsersByIDs(t.Context(), []*ListUsersByIDsT{
 		{ID: 20, TenantID: 1},
 		{ID: 10, TenantID: 0},
 		{ID: 99, TenantID: 3},
@@ -569,7 +569,7 @@ func TestGeneratedGroupedManyPrimaryAndTransactionRouting(t *testing.T) {
 
 		users, err := store.Users().ListUsersByIDs(
 			t.Context(),
-			[]*ListUsersByIDsShardParams{{ID: 20, TenantID: 1}, {ID: 10, TenantID: 0}},
+			[]*ListUsersByIDsT{{ID: 20, TenantID: 1}, {ID: 10, TenantID: 0}},
 			ReadFromPrimary(),
 		)
 		require.NoError(t, err)
@@ -593,7 +593,7 @@ func TestGeneratedGroupedManyPrimaryAndTransactionRouting(t *testing.T) {
 
 		users, err := store.Users().ListUsersByIDs(
 			t.Context(),
-			[]*ListUsersByIDsShardParams{{ID: 10, TenantID: 0}, {ID: 20, TenantID: 1}},
+			[]*ListUsersByIDsT{{ID: 10, TenantID: 0}, {ID: 20, TenantID: 1}},
 			WithTx(&fakeTx{fakeDB: &fakeDB{name: "tx", log: log, users: []*User{}}}),
 		)
 		require.ErrorIs(t, err, pgmesh.ErrCrossShardTransaction)
@@ -618,7 +618,7 @@ func TestGeneratedGroupedManyPrimaryAndTransactionRouting(t *testing.T) {
 
 		users, err := store.Users().ListUsersByIDs(
 			t.Context(),
-			[]*ListUsersByIDsShardParams{{ID: 10, TenantID: 0}, {ID: 12, TenantID: 2}},
+			[]*ListUsersByIDsT{{ID: 10, TenantID: 0}, {ID: 12, TenantID: 2}},
 			WithTx(&fakeTx{fakeDB: txDB}),
 		)
 		require.NoError(t, err)
@@ -667,7 +667,7 @@ func TestGeneratedGroupedManyPreflightAndFailureBehavior(t *testing.T) {
 
 		users, err := store.Users().ListUsersByIDs(
 			t.Context(),
-			[]*ListUsersByIDsShardParams{nil},
+			[]*ListUsersByIDsT{nil},
 		)
 		require.ErrorContains(t, err, "input 0")
 		require.ErrorContains(t, err, "nil")
@@ -691,7 +691,7 @@ func TestGeneratedGroupedManyPreflightAndFailureBehavior(t *testing.T) {
 
 		users, err := store.Users().ListUsersByIDs(
 			t.Context(),
-			[]*ListUsersByIDsShardParams{{ID: 10, TenantID: 0}, {ID: 11, TenantID: 4}},
+			[]*ListUsersByIDsT{{ID: 10, TenantID: 0}, {ID: 11, TenantID: 4}},
 		)
 		require.ErrorIs(t, err, pgmesh.ErrVShardOutOfRange)
 		require.ErrorContains(t, err, "input 1")
@@ -716,7 +716,7 @@ func TestGeneratedGroupedManyPreflightAndFailureBehavior(t *testing.T) {
 
 		users, err := store.Users().ListUsersByIDs(
 			t.Context(),
-			[]*ListUsersByIDsShardParams{{ID: 10, TenantID: 0}, {ID: 20, TenantID: 1}},
+			[]*ListUsersByIDsT{{ID: 10, TenantID: 0}, {ID: 20, TenantID: 1}},
 		)
 		require.ErrorIs(t, err, queryErr)
 		require.ErrorContains(t, err, `replica set "shard-b"`)
@@ -740,7 +740,7 @@ func TestGeneratedGroupedManyPreflightAndFailureBehavior(t *testing.T) {
 
 		users, err := store.Users().ListUsersByIDs(
 			t.Context(),
-			[]*ListUsersByIDsShardParams{{ID: 10, TenantID: 0}},
+			[]*ListUsersByIDsT{{ID: 10, TenantID: 0}},
 		)
 		require.ErrorContains(t, err, "unrequested lookup key")
 		assert.Nil(t, users)
@@ -940,7 +940,7 @@ func TestGeneratedRoutingOnlyShardArgument(t *testing.T) {
 
 	row, err := store.Analyses().GetTenantUserAnalysis(
 		t.Context(),
-		&GetTenantUserAnalysisShardParams{
+		&GetTenantUserAnalysisT{
 			UserID:     10,
 			AnalysisID: 20,
 			TenantID:   42,
@@ -975,7 +975,7 @@ func TestGeneratedP2PShardArgumentUsesMessageModel(t *testing.T) {
 
 	_, err = store.QueryMessage().ListP2PMessageIDsByChat(
 		t.Context(),
-		&ListP2PMessageIDsByChatShardParams{
+		&ListP2PMessageIDsByChatT{
 			UserID:          11,
 			ToUserOrGroupID: 22,
 			InGroup:         false,

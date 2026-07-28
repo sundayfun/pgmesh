@@ -55,6 +55,10 @@ type ShardResolver[SK any] interface {
 Route operands normally name SQL parameters. They must resolve to compatible Go
 types anywhere the same route is used.
 
+Store parameter structs consistently use the query name plus `T`. When sqlc
+generates `QueryNameParams`, pgmesh re-exports it as `QueryNameT`; when routing
+needs additional data, pgmesh generates `QueryNameT` with the combined fields.
+
 Some shard-local queries do not need the shard value in their SQL. In that
 case, give the route a routing-only operand:
 
@@ -75,7 +79,7 @@ field name and Go type, then combines it with the original sqlc parameter
 fields. Only the original fields are passed to SQL:
 
 ```go
-type ListTenantAccountsShardParams struct {
+type ListTenantAccountsT struct {
     Limit    int32
     Offset   int32
     TenantID int64
@@ -83,7 +87,7 @@ type ListTenantAccountsShardParams struct {
 
 accounts, err := queries.Accounts().ListTenantAccounts(
     ctx,
-    &db.ListTenantAccountsShardParams{
+    &db.ListTenantAccountsT{
         Limit:    100,
         TenantID: tenantID,
     },
@@ -120,14 +124,14 @@ The route may use a routing-only field. In that case pgmesh generates one input
 item containing both the singular lookup value and the routing data:
 
 ```go
-type ListAccountsByIDsShardParams struct {
+type ListAccountsByIDsT struct {
     ID       int64
     TenantID int64
 }
 
 accounts, err := queries.Accounts().ListAccountsByIDs(
     ctx,
-    []*db.ListAccountsByIDsShardParams{
+    []*db.ListAccountsByIDsT{
         {ID: firstID, TenantID: firstTenantID},
         {ID: secondID, TenantID: secondTenantID},
     },
@@ -273,7 +277,7 @@ trips, where p is the number of targeted physical shards. Input order is
 preserved within each group, and configured write mirrors receive their
 physical shard's group.
 
-Routing-only operands produce a flattened `[]*CopyAccountsShardParams`, using
+Routing-only operands produce a flattened `[]*CopyAccountsT`, using
 the same wrapper convention as ordinary routed queries. A routing error causes
 no copies. Database groups run concurrently and are all attempted; any error
 causes the method to return a zero count and a joined, replica-set-labeled

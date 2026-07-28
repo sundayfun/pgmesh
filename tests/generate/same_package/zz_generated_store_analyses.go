@@ -7,14 +7,17 @@ import (
 	pgmesh "github.com/sundayfun/pgmesh"
 )
 
-// GetTenantUserAnalysisShardParams combines sqlc and routing-only shard parameters for GetTenantUserAnalysis.
-type GetTenantUserAnalysisShardParams struct {
+// GetAnalysisT is the store parameter type for GetAnalysis.
+type GetAnalysisT = GetAnalysisParams
+
+// GetTenantUserAnalysisT combines SQL and routing parameters for GetTenantUserAnalysis.
+type GetTenantUserAnalysisT struct {
 	UserID     int64
 	AnalysisID int64
 	TenantID   int64
 }
 
-func (arg *GetTenantUserAnalysisShardParams) sqlcParams() *GetTenantUserAnalysisParams {
+func (arg *GetTenantUserAnalysisT) sqlcParams() *GetTenantUserAnalysisParams {
 	return &GetTenantUserAnalysisParams{
 		UserID:     arg.UserID,
 		AnalysisID: arg.AnalysisID,
@@ -24,9 +27,9 @@ func (arg *GetTenantUserAnalysisShardParams) sqlcParams() *GetTenantUserAnalysis
 // AnalysesReader exposes read queries in the Analyses store group.
 type AnalysesReader interface {
 	// GetAnalysis executes the generated GetAnalysis query.
-	GetAnalysis(ctx context.Context, arg *GetAnalysisParams, storeOptions ...QueryOption) (*Analysis, error)
+	GetAnalysis(ctx context.Context, arg *GetAnalysisT, storeOptions ...QueryOption) (*Analysis, error)
 	// GetTenantUserAnalysis executes the generated GetTenantUserAnalysis query.
-	GetTenantUserAnalysis(ctx context.Context, arg *GetTenantUserAnalysisShardParams, storeOptions ...QueryOption) (*GetTenantUserAnalysisRow, error)
+	GetTenantUserAnalysis(ctx context.Context, arg *GetTenantUserAnalysisT, storeOptions ...QueryOption) (*GetTenantUserAnalysisRow, error)
 }
 
 // AnalysesWriter exposes write queries in the Analyses store group.
@@ -47,7 +50,7 @@ func (q *meshStore[SK]) Analyses() Analyses {
 }
 
 // GetAnalysis executes the generated query on its target shard.
-func (q *groupedMeshStore[SK]) GetAnalysis(ctx context.Context, arg *GetAnalysisParams, storeOptions ...QueryOption) (result *Analysis, err error) {
+func (q *groupedMeshStore[SK]) GetAnalysis(ctx context.Context, arg *GetAnalysisT, storeOptions ...QueryOption) (result *Analysis, err error) {
 	// Trace the query and record its returned error.
 	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Analyses", "GetAnalysis", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()
@@ -84,7 +87,7 @@ func (q *groupedMeshStore[SK]) GetAnalysis(ctx context.Context, arg *GetAnalysis
 }
 
 // GetTenantUserAnalysis executes the generated query on its target shard.
-func (q *groupedMeshStore[SK]) GetTenantUserAnalysis(ctx context.Context, arg *GetTenantUserAnalysisShardParams, storeOptions ...QueryOption) (result *GetTenantUserAnalysisRow, err error) {
+func (q *groupedMeshStore[SK]) GetTenantUserAnalysis(ctx context.Context, arg *GetTenantUserAnalysisT, storeOptions ...QueryOption) (result *GetTenantUserAnalysisRow, err error) {
 	// Trace the query and record its returned error.
 	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Analyses", "GetTenantUserAnalysis", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()

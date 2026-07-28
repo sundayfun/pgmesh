@@ -204,6 +204,7 @@ func writeQueryInterfaces(
 }
 
 func writeStoreGroup(out *bytes.Buffer, opts *options, group *storeGroup) {
+	writeStoreParamAliases(out, group.queries)
 	writeShardArgWrappers(out, opts, group.queries)
 	writeStoreGroupInterfaces(out, opts, group)
 
@@ -272,6 +273,17 @@ func writeStoreInterfaceMethod(out *bytes.Buffer, opts *options, query *generate
 	)
 }
 
+func writeStoreParamAliases(out *bytes.Buffer, queries []generatedQuery) {
+	for _, query := range queries {
+		if query.storeParamAlias == nil {
+			continue
+		}
+		alias := query.storeParamAlias
+		fmt.Fprintf(out, "// %s is the store parameter type for %s.\n", alias.name, query.methodName)
+		fmt.Fprintf(out, "type %s = %s\n\n", alias.name, alias.target)
+	}
+}
+
 func writeShardArgWrappers(out *bytes.Buffer, opts *options, queries []generatedQuery) {
 	for _, query := range queries {
 		if query.shardArgs == nil {
@@ -279,7 +291,7 @@ func writeShardArgWrappers(out *bytes.Buffer, opts *options, queries []generated
 		}
 		fmt.Fprintf(
 			out,
-			"// %s combines sqlc and routing-only shard parameters for %s.\n",
+			"// %s combines SQL and routing parameters for %s.\n",
 			query.shardArgs.name,
 			query.methodName,
 		)

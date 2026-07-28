@@ -701,7 +701,8 @@ func TestGenerateShardRoutedFacade(t *testing.T) {
 		"type Store interface",
 		"func ReadFromPrimary() QueryOption",
 		"func WithTx(tx pgx.Tx) QueryOption",
-		"func (q *groupedMeshStore[SK]) ListP2PMessages(ctx context.Context, arg *ListP2PMessagesParams, storeOptions ...QueryOption) (result []int64, err error)",
+		"type ListP2PMessagesT = ListP2PMessagesParams",
+		"func (q *groupedMeshStore[SK]) ListP2PMessages(ctx context.Context, arg *ListP2PMessagesT, storeOptions ...QueryOption) (result []int64, err error)",
 		"var shardKey SK",
 		"shardKey = q.store.resolver.P2P(arg.UserID, arg.PeerID)",
 		`q.store.mesh.StartSpan(ctx, "Messages", "ListP2PMessages", pgmesh.QueryKindRead)`,
@@ -786,12 +787,12 @@ func TestGenerateWrapsRoutingOnlyShardOperand(t *testing.T) {
 	assert.Contains(
 		t,
 		got,
-		"type ListTenantUsersShardParams struct {\n\tLimit    int32\n\tOffset   int32\n\tTenantID int64\n}",
+		"type ListTenantUsersT struct {\n\tLimit    int32\n\tOffset   int32\n\tTenantID int64\n}",
 	)
 	assert.Contains(
 		t,
 		got,
-		"func (arg *ListTenantUsersShardParams) sqlcParams() *ListTenantUsersParams {\n"+
+		"func (arg *ListTenantUsersT) sqlcParams() *ListTenantUsersParams {\n"+
 			"\treturn &ListTenantUsersParams{\n"+
 			"\t\tLimit:  arg.Limit,\n"+
 			"\t\tOffset: arg.Offset,\n"+
@@ -800,12 +801,12 @@ func TestGenerateWrapsRoutingOnlyShardOperand(t *testing.T) {
 	assert.Contains(
 		t,
 		got,
-		"ListTenantUsers(ctx context.Context, arg *ListTenantUsersShardParams, storeOptions ...QueryOption) ([]int64, error)",
+		"ListTenantUsers(ctx context.Context, arg *ListTenantUsersT, storeOptions ...QueryOption) ([]int64, error)",
 	)
 	assert.Contains(
 		t,
 		got,
-		"func (q *groupedMeshStore[SK]) ListTenantUsers(ctx context.Context, arg *ListTenantUsersShardParams, storeOptions ...QueryOption)",
+		"func (q *groupedMeshStore[SK]) ListTenantUsers(ctx context.Context, arg *ListTenantUsersT, storeOptions ...QueryOption)",
 	)
 	body := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListTenantUsers")
 	assert.Contains(t, body, "shardKey = q.store.resolver.Tenant(arg.TenantID)")
@@ -824,13 +825,13 @@ func TestGenerateWrapsRoutingOnlyShardOperand(t *testing.T) {
 	assert.Contains(
 		t,
 		valueSource,
-		"func (arg ListTenantUsersShardParams) sqlcParams() ListTenantUsersParams {\n"+
+		"func (arg ListTenantUsersT) sqlcParams() ListTenantUsersParams {\n"+
 			"\treturn ListTenantUsersParams{",
 	)
 	assert.Contains(
 		t,
 		valueSource,
-		"ListTenantUsers(ctx context.Context, arg ListTenantUsersShardParams, storeOptions ...QueryOption)",
+		"ListTenantUsers(ctx context.Context, arg ListTenantUsersT, storeOptions ...QueryOption)",
 	)
 }
 
@@ -906,12 +907,12 @@ func TestGenerateGroupsListValuedManyByPhysicalShard(t *testing.T) {
 	assert.Contains(
 		t,
 		got,
-		"type ListUsersByIDShardParams struct {\n\tID       int64\n\tTenantID int64\n}",
+		"type ListUsersByIDT struct {\n\tID       int64\n\tTenantID int64\n}",
 	)
 	assert.Contains(
 		t,
 		got,
-		"ListUsersByID(ctx context.Context, arg []*ListUsersByIDShardParams, storeOptions ...QueryOption) ([]*User, error)",
+		"ListUsersByID(ctx context.Context, arg []*ListUsersByIDT, storeOptions ...QueryOption) ([]*User, error)",
 	)
 	assert.Contains(t, got, "Tenant(tenantID int64) SK")
 	body := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListUsersByID")
@@ -973,7 +974,7 @@ func TestGenerateGroupsListValuedManyByPhysicalShard(t *testing.T) {
 	assert.Contains(
 		t,
 		valueSource,
-		"ListUsersByID(ctx context.Context, arg []ListUsersByIDShardParams, storeOptions ...QueryOption)",
+		"ListUsersByID(ctx context.Context, arg []ListUsersByIDT, storeOptions ...QueryOption)",
 	)
 	valueBody := generatedMethodBody(t, valueSource, "groupedMeshStore[SK]", "ListUsersByID")
 	assert.NotContains(t, valueBody, "if item == nil")
@@ -1045,11 +1046,11 @@ func TestGenerateScalarizesGroupedManyResolverOperand(t *testing.T) {
 	structResponse, err := Generate(t.Context(), request)
 	require.NoError(t, err)
 	structSource := generatedSource(structResponse)
-	assert.Contains(t, structSource, "type ListUsersByIDsShardParams struct {\n\tID int64\n}")
+	assert.Contains(t, structSource, "type ListUsersByIDsT struct {\n\tID int64\n}")
 	assert.Contains(
 		t,
 		structSource,
-		"ListUsersByIDs(ctx context.Context, arg []*ListUsersByIDsShardParams, storeOptions ...QueryOption)",
+		"ListUsersByIDs(ctx context.Context, arg []*ListUsersByIDsT, storeOptions ...QueryOption)",
 	)
 	structBody := generatedMethodBody(t, structSource, "groupedMeshStore[SK]", "ListUsersByIDs")
 	assert.Contains(
@@ -1106,6 +1107,8 @@ func TestGenerateGroupedManyMergesNullableResultKeys(t *testing.T) {
 	}
 
 	t.Run("pointer null", func(t *testing.T) {
+		t.Parallel()
+
 		response, err := Generate(t.Context(), request(true))
 		require.NoError(t, err)
 
@@ -1123,6 +1126,8 @@ func TestGenerateGroupedManyMergesNullableResultKeys(t *testing.T) {
 	})
 
 	t.Run("pgx null type", func(t *testing.T) {
+		t.Parallel()
+
 		response, err := Generate(t.Context(), request(false))
 		require.NoError(t, err)
 
@@ -1241,8 +1246,8 @@ func TestGenerateUsesRenamedModelFieldForRoutingOnlyShardOperand(t *testing.T) {
 	require.NoError(t, err)
 
 	got := generatedSource(response)
-	assert.Contains(t, got, "type GetShardUserShardParams struct {\n\tID    int64\n\tShard int64\n}")
-	assert.Contains(t, got, "GetShardUser(ctx context.Context, arg GetShardUserShardParams, storeOptions ...QueryOption)")
+	assert.Contains(t, got, "type GetShardUserT struct {\n\tID    int64\n\tShard int64\n}")
+	assert.Contains(t, got, "GetShardUser(ctx context.Context, arg GetShardUserT, storeOptions ...QueryOption)")
 	body := generatedMethodBody(t, got, "groupedMeshStore[SK]", "GetShardUser")
 	assert.Contains(t, body, "shardKey = q.store.resolver.Tenant(arg.Shard)")
 	assert.Contains(t, body, "return shard.Read().GetShardUser(ctx, arg.ID)")
@@ -1293,7 +1298,7 @@ func TestGenerateAllowsCompatibleShardFieldsOnMultipleModels(t *testing.T) {
 	require.NoError(t, err)
 
 	got := generatedSource(response)
-	assert.Contains(t, got, "type ListMembershipsShardParams struct {\n\tTenantID int64\n}")
+	assert.Contains(t, got, "type ListMembershipsT struct {\n\tTenantID int64\n}")
 	assert.Contains(t, got, "Tenant(tenantID int64) SK")
 	body := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListMemberships")
 	assert.Contains(t, body, "shardKey = q.store.resolver.Tenant(arg.TenantID)")
@@ -1347,7 +1352,7 @@ func TestGeneratePrioritizesResultModelsForShardFieldLookup(t *testing.T) {
 	require.NoError(t, err)
 
 	got := generatedSource(response)
-	assert.Contains(t, got, "type ListUsersShardParams struct {\n\tAuditFilter string\n\tTenantID    int64\n}")
+	assert.Contains(t, got, "type ListUsersT struct {\n\tAuditFilter string\n\tTenantID    int64\n}")
 	assert.Contains(t, got, "Tenant(tenantID int64) SK")
 }
 
@@ -1405,7 +1410,7 @@ func TestGenerateUsesSQLSourceTableWhenColumnProvenanceIsMissing(t *testing.T) {
 	assert.Contains(
 		t,
 		got,
-		"type ListP2PMessageIDsByChatShardParams struct {\n\tUserID          int64\n\tToUserOrGroupID int64\n\tInGroup         bool\n}",
+		"type ListP2PMessageIDsByChatT struct {\n\tUserID          int64\n\tToUserOrGroupID int64\n\tInGroup         bool\n}",
 	)
 	assert.Contains(
 		t,
@@ -1857,12 +1862,12 @@ func TestGenerateGroupedCopyWithRoutingOnlyOperand(t *testing.T) {
 	assert.Contains(
 		t,
 		got,
-		"type CopyUsersShardParams struct {\n\tID       int64\n\tName     string\n\tTenantID int64\n}",
+		"type CopyUsersT struct {\n\tID       int64\n\tName     string\n\tTenantID int64\n}",
 	)
 	assert.Contains(
 		t,
 		got,
-		"CopyUsers(ctx context.Context, arg []*CopyUsersShardParams, storeOptions ...QueryOption) (int64, error)",
+		"CopyUsers(ctx context.Context, arg []*CopyUsersT, storeOptions ...QueryOption) (int64, error)",
 	)
 	assert.Contains(t, got, "shardKey = q.store.resolver.Tenant(item.TenantID)")
 	assert.Contains(t, got, "shardGroup.args = append(shardGroup.args, item.sqlcParams())")
@@ -2066,7 +2071,8 @@ func TestGenerateQualifiesSqlcTypesForSeparatePackage(t *testing.T) {
 		`db "example.test/project/internal/db"`,
 		`pgmesh "example.test/project/pgmesh"`,
 		"GetUser(ctx context.Context, arg *db.GetUserParams) (*db.User, error)",
-		"GetUser(ctx context.Context, arg *db.GetUserParams, storeOptions ...QueryOption) (*db.User, error)",
+		"type GetUserT = db.GetUserParams",
+		"GetUser(ctx context.Context, arg *GetUserT, storeOptions ...QueryOption) (*db.User, error)",
 		"User(token db.Token) SK",
 		"main *db.Queries",
 		"func newReadQueries(q *db.Queries) *readQueries",
@@ -2160,12 +2166,22 @@ func TestGenerateExportsSQLCTypesForSeparatePackage(t *testing.T) {
 	assert.Contains(
 		t,
 		usersFile,
-		"CreateUser(ctx context.Context, arg CreateUserParams, storeOptions ...QueryOption) (User, error)",
+		"type CreateUserT = CreateUserParams",
 	)
 	assert.Contains(
 		t,
 		usersFile,
-		"FindUser(ctx context.Context, arg FindUserParams, storeOptions ...QueryOption) (FindUserRow, error)",
+		"CreateUser(ctx context.Context, arg CreateUserT, storeOptions ...QueryOption) (User, error)",
+	)
+	assert.Contains(
+		t,
+		usersFile,
+		"type FindUserT = FindUserParams",
+	)
+	assert.Contains(
+		t,
+		usersFile,
+		"FindUser(ctx context.Context, arg FindUserT, storeOptions ...QueryOption) (FindUserRow, error)",
 	)
 }
 

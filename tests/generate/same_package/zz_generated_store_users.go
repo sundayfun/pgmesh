@@ -11,8 +11,20 @@ import (
 	"sync"
 )
 
-// ListUsersByIDsShardParams combines sqlc and routing-only shard parameters for ListUsersByIDs.
-type ListUsersByIDsShardParams struct {
+// CopyUsersT is the store parameter type for CopyUsers.
+type CopyUsersT = CopyUsersParams
+
+// CreateUserT is the store parameter type for CreateUser.
+type CreateUserT = CreateUserParams
+
+// GetUserT is the store parameter type for GetUser.
+type GetUserT = GetUserParams
+
+// UpdateUserNameT is the store parameter type for UpdateUserName.
+type UpdateUserNameT = UpdateUserNameParams
+
+// ListUsersByIDsT combines SQL and routing parameters for ListUsersByIDs.
+type ListUsersByIDsT struct {
 	ID       int64
 	TenantID int64
 }
@@ -20,25 +32,25 @@ type ListUsersByIDsShardParams struct {
 // UsersReader exposes read queries in the Users store group.
 type UsersReader interface {
 	// GetUser executes the generated GetUser query.
-	GetUser(ctx context.Context, arg *GetUserParams, storeOptions ...QueryOption) (*User, error)
+	GetUser(ctx context.Context, arg *GetUserT, storeOptions ...QueryOption) (*User, error)
 	// ListAllUsers executes the generated ListAllUsers query.
 	ListAllUsers(ctx context.Context, storeOptions ...QueryOption) ([]*User, error)
 	// ListUsersByIDs executes the generated ListUsersByIDs query.
-	ListUsersByIDs(ctx context.Context, arg []*ListUsersByIDsShardParams, storeOptions ...QueryOption) ([]*User, error)
+	ListUsersByIDs(ctx context.Context, arg []*ListUsersByIDsT, storeOptions ...QueryOption) ([]*User, error)
 }
 
 // UsersWriter exposes write queries in the Users store group.
 type UsersWriter interface {
 	// CopyUsers executes the generated CopyUsers query.
-	CopyUsers(ctx context.Context, arg []*CopyUsersParams, storeOptions ...QueryOption) (int64, error)
+	CopyUsers(ctx context.Context, arg []*CopyUsersT, storeOptions ...QueryOption) (int64, error)
 	// CreateUser executes the generated CreateUser query.
-	CreateUser(ctx context.Context, arg *CreateUserParams, storeOptions ...QueryOption) (*User, error)
+	CreateUser(ctx context.Context, arg *CreateUserT, storeOptions ...QueryOption) (*User, error)
 	// DeleteAllUsers executes the generated DeleteAllUsers query.
 	DeleteAllUsers(ctx context.Context, storeOptions ...QueryOption) error
 	// DeleteAllUsersByName executes the generated DeleteAllUsersByName query.
 	DeleteAllUsersByName(ctx context.Context, name string, storeOptions ...QueryOption) (int64, error)
 	// UpdateUserName executes the generated UpdateUserName query.
-	UpdateUserName(ctx context.Context, arg *UpdateUserNameParams, storeOptions ...QueryOption) (*User, error)
+	UpdateUserName(ctx context.Context, arg *UpdateUserNameT, storeOptions ...QueryOption) (*User, error)
 }
 
 // Users exposes all queries in its generated store group.
@@ -55,7 +67,7 @@ func (q *meshStore[SK]) Users() Users {
 }
 
 // CopyUsers groups rows by physical shard and executes one copy per group.
-func (q *groupedMeshStore[SK]) CopyUsers(ctx context.Context, arg []*CopyUsersParams, storeOptions ...QueryOption) (result int64, err error) {
+func (q *groupedMeshStore[SK]) CopyUsers(ctx context.Context, arg []*CopyUsersT, storeOptions ...QueryOption) (result int64, err error) {
 	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "CopyUsers", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()
 
@@ -138,7 +150,7 @@ func (q *groupedMeshStore[SK]) CopyUsers(ctx context.Context, arg []*CopyUsersPa
 }
 
 // CreateUser executes the generated query on its target shard.
-func (q *groupedMeshStore[SK]) CreateUser(ctx context.Context, arg *CreateUserParams, storeOptions ...QueryOption) (result *User, err error) {
+func (q *groupedMeshStore[SK]) CreateUser(ctx context.Context, arg *CreateUserT, storeOptions ...QueryOption) (result *User, err error) {
 	// Trace the query and record its returned error.
 	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "CreateUser", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()
@@ -256,7 +268,7 @@ func (q *groupedMeshStore[SK]) DeleteAllUsersByName(ctx context.Context, name st
 }
 
 // GetUser executes the generated query on its target shard.
-func (q *groupedMeshStore[SK]) GetUser(ctx context.Context, arg *GetUserParams, storeOptions ...QueryOption) (result *User, err error) {
+func (q *groupedMeshStore[SK]) GetUser(ctx context.Context, arg *GetUserT, storeOptions ...QueryOption) (result *User, err error) {
 	// Trace the query and record its returned error.
 	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "GetUser", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()
@@ -345,7 +357,7 @@ func (q *groupedMeshStore[SK]) ListAllUsers(ctx context.Context, storeOptions ..
 }
 
 // ListUsersByIDs groups lookup values by physical shard and restores input-key result order.
-func (q *groupedMeshStore[SK]) ListUsersByIDs(ctx context.Context, arg []*ListUsersByIDsShardParams, storeOptions ...QueryOption) (result []*User, err error) {
+func (q *groupedMeshStore[SK]) ListUsersByIDs(ctx context.Context, arg []*ListUsersByIDsT, storeOptions ...QueryOption) (result []*User, err error) {
 	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "ListUsersByIDs", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()
 
@@ -482,7 +494,7 @@ func (q *groupedMeshStore[SK]) ListUsersByIDs(ctx context.Context, arg []*ListUs
 }
 
 // UpdateUserName executes the generated query on its target shard.
-func (q *groupedMeshStore[SK]) UpdateUserName(ctx context.Context, arg *UpdateUserNameParams, storeOptions ...QueryOption) (result *User, err error) {
+func (q *groupedMeshStore[SK]) UpdateUserName(ctx context.Context, arg *UpdateUserNameT, storeOptions ...QueryOption) (result *User, err error) {
 	// Trace the query and record its returned error.
 	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "UpdateUserName", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()

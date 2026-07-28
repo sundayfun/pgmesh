@@ -136,6 +136,9 @@ func validateSQLCTypeAliases(
 		declarations[storeWriterInterfaceName(group.name)] = "store group " + group.name
 	}
 	for _, query := range queries {
+		if query.storeParamAlias != nil {
+			declarations[query.storeParamAlias.name] = "store parameter alias for " + query.methodName
+		}
 		if query.shardArgs != nil {
 			declarations[query.shardArgs.name] = "shard parameter wrapper for " + query.methodName
 		}

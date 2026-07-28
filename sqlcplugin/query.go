@@ -40,20 +40,26 @@ func querySpecs(req *plugin.GenerateRequest, opts *options) ([]generatedQuery, *
 }
 
 type generatedQuery struct {
-	methodName  string
-	command     string
-	kind        queryKind
-	arg         queryValue
-	ret         queryValue
-	params      []argument
-	storeParams []argument
-	callArgs    []string
-	results     []string
-	route       *shardRoute
-	shardMode   shardMode
-	store       string
-	shardArgs   *shardArgWrapper
-	groupedMany *groupedManySpec
+	methodName      string
+	command         string
+	kind            queryKind
+	arg             queryValue
+	ret             queryValue
+	params          []argument
+	storeParams     []argument
+	callArgs        []string
+	results         []string
+	route           *shardRoute
+	shardMode       shardMode
+	store           string
+	storeParamAlias *storeParamAlias
+	shardArgs       *shardArgWrapper
+	groupedMany     *groupedManySpec
+}
+
+type storeParamAlias struct {
+	name   string
+	target string
 }
 
 type storeGroup struct {
@@ -188,6 +194,17 @@ func collectStoreGroups(queries []generatedQuery, opts *options) ([]storeGroup, 
 		}
 	}
 	for _, query := range queries {
+		if query.storeParamAlias != nil {
+			if previous, exists := declarations[query.storeParamAlias.name]; exists {
+				return nil, fmt.Errorf(
+					"query %s generates store parameter alias %s that conflicts with %s",
+					query.methodName,
+					query.storeParamAlias.name,
+					previous,
+				)
+			}
+			declarations[query.storeParamAlias.name] = "store parameter alias for " + query.methodName
+		}
 		if query.shardArgs == nil {
 			continue
 		}
@@ -561,25 +578,27 @@ func buildQueries(
 		}
 
 		out = append(out, generatedQuery{
-			methodName:  query.GetName(),
-			command:     query.GetCmd(),
-			kind:        kind,
-			arg:         arg,
-			ret:         ret,
-			params:      params,
-			storeParams: append([]argument(nil), params...),
-			callArgs:    argumentNames(params),
-			results:     results,
-			route:       route,
-			shardMode:   shardMode,
-			store:       store,
-			shardArgs:   nil,
-			groupedMany: groupedMany,
+			methodName:      query.GetName(),
+			command:         query.GetCmd(),
+			kind:            kind,
+			arg:             arg,
+			ret:             ret,
+			params:          params,
+			storeParams:     append([]argument(nil), params...),
+			callArgs:        argumentNames(params),
+			results:         results,
+			route:           route,
+			shardMode:       shardMode,
+			store:           store,
+			storeParamAlias: nil,
+			shardArgs:       nil,
+			groupedMany:     groupedMany,
 		})
 	}
 	if err := wrapQueriesWithExternalShardOperands(out, opts); err != nil {
 		return nil, err
 	}
+	aliasSQLCParamsForStore(out, opts)
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].methodName < out[j].methodName
 	})
@@ -735,10 +754,20 @@ func groupedManyResultKey(
 
 func groupedManyKeyAccess(resultType, elementType string) (groupedManyResultKeyAccess, bool) {
 	if resultType == elementType {
-		return groupedManyResultKeyAccess{}, true
+		return groupedManyResultKeyAccess{
+			nullable:   false,
+			pointer:    false,
+			valid:      false,
+			valueField: "",
+		}, true
 	}
 	if resultType == "*"+elementType {
-		return groupedManyResultKeyAccess{nullable: true, pointer: true}, true
+		return groupedManyResultKeyAccess{
+			nullable:   true,
+			pointer:    true,
+			valid:      false,
+			valueField: "",
+		}, true
 	}
 
 	type nullableType struct {
@@ -747,24 +776,25 @@ func groupedManyKeyAccess(resultType, elementType string) (groupedManyResultKeyA
 	}
 	nullableTypes := map[string]nullableType{
 		"pgtype.Int4":     {elementType: "int32", valueField: "Int32"},
-		"pgtype.Int8":     {elementType: "int64", valueField: "Int64"},
+		"pgtype.Int8":     {elementType: goTypeInt64, valueField: "Int64"},
 		"pgtype.Int2":     {elementType: "int16", valueField: "Int16"},
 		"pgtype.Float8":   {elementType: "float64", valueField: "Float64"},
 		"pgtype.Float4":   {elementType: "float32", valueField: "Float32"},
-		"pgtype.Bool":     {elementType: "bool", valueField: "Bool"},
-		"pgtype.Text":     {elementType: "string", valueField: "String"},
-		"sql.NullBool":    {elementType: "bool", valueField: "Bool"},
+		"pgtype.Bool":     {elementType: goTypeBool, valueField: "Bool"},
+		"pgtype.Text":     {elementType: goTypeString, valueField: "String"},
+		"sql.NullBool":    {elementType: goTypeBool, valueField: "Bool"},
 		"sql.NullByte":    {elementType: "byte", valueField: "Byte"},
 		"sql.NullFloat64": {elementType: "float64", valueField: "Float64"},
 		"sql.NullInt16":   {elementType: "int16", valueField: "Int16"},
 		"sql.NullInt32":   {elementType: "int32", valueField: "Int32"},
-		"sql.NullInt64":   {elementType: "int64", valueField: "Int64"},
-		"sql.NullString":  {elementType: "string", valueField: "String"},
+		"sql.NullInt64":   {elementType: goTypeInt64, valueField: "Int64"},
+		"sql.NullString":  {elementType: goTypeString, valueField: "String"},
 		"sql.NullTime":    {elementType: "time.Time", valueField: "Time"},
 	}
 	if nullable, ok := nullableTypes[resultType]; ok && nullable.elementType == elementType {
 		return groupedManyResultKeyAccess{
 			nullable:   true,
+			pointer:    false,
 			valid:      true,
 			valueField: nullable.valueField,
 		}, true
@@ -777,11 +807,17 @@ func groupedManyKeyAccess(resultType, elementType string) (groupedManyResultKeyA
 		elementName != "" {
 		return groupedManyResultKeyAccess{
 			nullable:   true,
+			pointer:    false,
 			valid:      true,
 			valueField: elementName,
 		}, true
 	}
-	return groupedManyResultKeyAccess{}, false
+	return groupedManyResultKeyAccess{
+		nullable:   false,
+		pointer:    false,
+		valid:      false,
+		valueField: "",
+	}, false
 }
 
 func splitTypeQualifier(typ string) (string, string) {
@@ -1338,10 +1374,42 @@ func wrapQueriesWithExternalShardOperands(queries []generatedQuery, opts *option
 	return nil
 }
 
+func aliasSQLCParamsForStore(queries []generatedQuery, opts *options) {
+	for index := range queries {
+		query := &queries[index]
+		if query.store == "" ||
+			query.shardArgs != nil ||
+			!query.arg.emit ||
+			query.arg.structType == nil {
+			continue
+		}
+
+		sqlcType := targetName(opts, query.arg.structType.name)
+		aliasName := query.methodName + "T"
+		replaced := false
+		for paramIndex := range query.storeParams {
+			param := &query.storeParams[paramIndex]
+			typ := strings.ReplaceAll(param.typ, sqlcType, aliasName)
+			if typ == param.typ {
+				continue
+			}
+			param.typ = typ
+			replaced = true
+		}
+		if !replaced {
+			continue
+		}
+		query.storeParamAlias = &storeParamAlias{
+			name:   aliasName,
+			target: exportedSQLCType(opts, sqlcType),
+		}
+	}
+}
+
 func wrapGroupedManyShardOperands(query *generatedQuery, opts *options) error {
 	spec := query.groupedMany
 	wrapper := &shardArgWrapper{
-		name:    query.methodName + "ShardParams",
+		name:    query.methodName + "T",
 		fields:  nil,
 		sqlcArg: queryValue{},
 	}
@@ -1406,7 +1474,7 @@ func wrapGroupedManyShardOperands(query *generatedQuery, opts *options) error {
 
 func wrapExternalShardOperands(query *generatedQuery, opts *options) error {
 	wrapper := &shardArgWrapper{
-		name:    query.methodName + "ShardParams",
+		name:    query.methodName + "T",
 		fields:  nil,
 		sqlcArg: queryValue{},
 	}
@@ -1589,7 +1657,7 @@ func resultTypes(query *plugin.Query, ret queryValue, opts *options) ([]string, 
 	case cmdExec:
 		return []string{resultErrorName}, nil
 	case cmdExecRows, cmdCopyFrom:
-		return []string{"int64", resultErrorName}, nil
+		return []string{goTypeInt64, resultErrorName}, nil
 	case ":execresult":
 		return []string{"pgconn.CommandTag", resultErrorName}, nil
 	case ":batchexec", ":batchone", ":batchmany":

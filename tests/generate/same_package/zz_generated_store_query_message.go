@@ -8,8 +8,8 @@ import (
 	pgmesh "github.com/sundayfun/pgmesh"
 )
 
-// ListP2PMessageIDsByChatShardParams combines sqlc and routing-only shard parameters for ListP2PMessageIDsByChat.
-type ListP2PMessageIDsByChatShardParams struct {
+// ListP2PMessageIDsByChatT combines SQL and routing parameters for ListP2PMessageIDsByChat.
+type ListP2PMessageIDsByChatT struct {
 	Limit           int32
 	UserID          int64
 	PeerID          int64
@@ -19,7 +19,7 @@ type ListP2PMessageIDsByChatShardParams struct {
 	InGroup         bool
 }
 
-func (arg *ListP2PMessageIDsByChatShardParams) sqlcParams() *ListP2PMessageIDsByChatParams {
+func (arg *ListP2PMessageIDsByChatT) sqlcParams() *ListP2PMessageIDsByChatParams {
 	return &ListP2PMessageIDsByChatParams{
 		Limit:        arg.Limit,
 		UserID:       arg.UserID,
@@ -29,8 +29,8 @@ func (arg *ListP2PMessageIDsByChatShardParams) sqlcParams() *ListP2PMessageIDsBy
 	}
 }
 
-// ListP2PMessagesByChatShardParams combines sqlc and routing-only shard parameters for ListP2PMessagesByChat.
-type ListP2PMessagesByChatShardParams struct {
+// ListP2PMessagesByChatT combines SQL and routing parameters for ListP2PMessagesByChat.
+type ListP2PMessagesByChatT struct {
 	Limit           int32
 	UserID          int64
 	PeerID          int64
@@ -40,7 +40,7 @@ type ListP2PMessagesByChatShardParams struct {
 	InGroup         bool
 }
 
-func (arg *ListP2PMessagesByChatShardParams) sqlcParams() *ListP2PMessagesByChatParams {
+func (arg *ListP2PMessagesByChatT) sqlcParams() *ListP2PMessagesByChatParams {
 	return &ListP2PMessagesByChatParams{
 		Limit:        arg.Limit,
 		UserID:       arg.UserID,
@@ -53,9 +53,9 @@ func (arg *ListP2PMessagesByChatShardParams) sqlcParams() *ListP2PMessagesByChat
 // QueryMessageReader exposes read queries in the QueryMessage store group.
 type QueryMessageReader interface {
 	// ListP2PMessageIDsByChat executes the generated ListP2PMessageIDsByChat query.
-	ListP2PMessageIDsByChat(ctx context.Context, arg *ListP2PMessageIDsByChatShardParams, storeOptions ...QueryOption) ([]interface{}, error)
+	ListP2PMessageIDsByChat(ctx context.Context, arg *ListP2PMessageIDsByChatT, storeOptions ...QueryOption) ([]interface{}, error)
 	// ListP2PMessagesByChat executes the generated ListP2PMessagesByChat query.
-	ListP2PMessagesByChat(ctx context.Context, arg *ListP2PMessagesByChatShardParams, storeOptions ...QueryOption) ([]*Message, error)
+	ListP2PMessagesByChat(ctx context.Context, arg *ListP2PMessagesByChatT, storeOptions ...QueryOption) ([]*Message, error)
 }
 
 // QueryMessageWriter exposes write queries in the QueryMessage store group.
@@ -76,7 +76,7 @@ func (q *meshStore[SK]) QueryMessage() QueryMessage {
 }
 
 // ListP2PMessageIDsByChat executes the generated query on its target shard.
-func (q *groupedMeshStore[SK]) ListP2PMessageIDsByChat(ctx context.Context, arg *ListP2PMessageIDsByChatShardParams, storeOptions ...QueryOption) (result []interface{}, err error) {
+func (q *groupedMeshStore[SK]) ListP2PMessageIDsByChat(ctx context.Context, arg *ListP2PMessageIDsByChatT, storeOptions ...QueryOption) (result []interface{}, err error) {
 	// Trace the query and record its returned error.
 	ctx, querySpan := q.store.mesh.StartSpan(ctx, "QueryMessage", "ListP2PMessageIDsByChat", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()
@@ -113,7 +113,7 @@ func (q *groupedMeshStore[SK]) ListP2PMessageIDsByChat(ctx context.Context, arg 
 }
 
 // ListP2PMessagesByChat executes the generated query on its target shard.
-func (q *groupedMeshStore[SK]) ListP2PMessagesByChat(ctx context.Context, arg *ListP2PMessagesByChatShardParams, storeOptions ...QueryOption) (result []*Message, err error) {
+func (q *groupedMeshStore[SK]) ListP2PMessagesByChat(ctx context.Context, arg *ListP2PMessagesByChatT, storeOptions ...QueryOption) (result []*Message, err error) {
 	// Trace the query and record its returned error.
 	ctx, querySpan := q.store.mesh.StartSpan(ctx, "QueryMessage", "ListP2PMessagesByChat", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()

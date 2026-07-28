@@ -55,6 +55,9 @@ const (
 	cmdExecRows           = ":execrows"
 	cmdCopyFrom           = ":copyfrom"
 	emptyInterfaceType    = "interface{}"
+	goTypeBool            = "bool"
+	goTypeInt64           = "int64"
+	goTypeString          = "string"
 )
 
 // Generate implements sqlc's CodegenService.Generate hook.

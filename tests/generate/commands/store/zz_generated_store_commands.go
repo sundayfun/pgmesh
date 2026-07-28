@@ -9,6 +9,12 @@ import (
 	db "github.com/sundayfun/pgmesh/tests/generate/commands/internal"
 )
 
+// BatchInsertCommandUsersT is the store parameter type for BatchInsertCommandUsers.
+type BatchInsertCommandUsersT = db.BatchInsertCommandUsersParams
+
+// CopyCommandUsersT is the store parameter type for CopyCommandUsers.
+type CopyCommandUsersT = db.CopyCommandUsersParams
+
 // CommandsReader exposes read queries in the Commands store group.
 type CommandsReader interface {
 	// BatchGetCommandUser executes the generated BatchGetCommandUser query.
@@ -24,9 +30,9 @@ type CommandsReader interface {
 // CommandsWriter exposes write queries in the Commands store group.
 type CommandsWriter interface {
 	// BatchInsertCommandUsers executes the generated BatchInsertCommandUsers query.
-	BatchInsertCommandUsers(ctx context.Context, arg []*db.BatchInsertCommandUsersParams, storeOptions ...QueryOption) *db.BatchInsertCommandUsersBatchResults
+	BatchInsertCommandUsers(ctx context.Context, arg []*BatchInsertCommandUsersT, storeOptions ...QueryOption) *db.BatchInsertCommandUsersBatchResults
 	// CopyCommandUsers executes the generated CopyCommandUsers query.
-	CopyCommandUsers(ctx context.Context, arg []*db.CopyCommandUsersParams, storeOptions ...QueryOption) (int64, error)
+	CopyCommandUsers(ctx context.Context, arg []*CopyCommandUsersT, storeOptions ...QueryOption) (int64, error)
 	// DeleteCommandUser executes the generated DeleteCommandUser query.
 	DeleteCommandUser(ctx context.Context, id int64, storeOptions ...QueryOption) error
 	// DeleteCommandUsersByTenant executes the generated DeleteCommandUsersByTenant query.
@@ -73,7 +79,7 @@ func (q *groupedMeshStore[SK]) BatchGetCommandUser(ctx context.Context, id []int
 }
 
 // BatchInsertCommandUsers executes the generated query on its target shard.
-func (q *groupedMeshStore[SK]) BatchInsertCommandUsers(ctx context.Context, arg []*db.BatchInsertCommandUsersParams, storeOptions ...QueryOption) *db.BatchInsertCommandUsersBatchResults {
+func (q *groupedMeshStore[SK]) BatchInsertCommandUsers(ctx context.Context, arg []*BatchInsertCommandUsersT, storeOptions ...QueryOption) *db.BatchInsertCommandUsersBatchResults {
 	// Resolve the shard key for this topology.
 	var shardKey SK
 	shard, _ := q.store.mesh.Shard(shardKey)
@@ -116,7 +122,7 @@ func (q *groupedMeshStore[SK]) BatchListCommandUsersByTenant(ctx context.Context
 }
 
 // CopyCommandUsers executes the generated query on its target shard.
-func (q *groupedMeshStore[SK]) CopyCommandUsers(ctx context.Context, arg []*db.CopyCommandUsersParams, storeOptions ...QueryOption) (result int64, err error) {
+func (q *groupedMeshStore[SK]) CopyCommandUsers(ctx context.Context, arg []*CopyCommandUsersT, storeOptions ...QueryOption) (result int64, err error) {
 	// Trace the query and record its returned error.
 	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Commands", "CopyCommandUsers", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()

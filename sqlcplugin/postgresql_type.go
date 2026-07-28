@@ -130,17 +130,17 @@ func (r *typeResolver) postgresType(column *plugin.Column) string {
 	case "serial", "serial4", "pg_catalog.serial4", "integer", "int", "int4", "pg_catalog.int4":
 		return nullableType("int32", "*int32", "pgtype.Int4", notNull, emitPointersForNull)
 	case "bigserial", "serial8", "pg_catalog.serial8", "bigint", "int8", "pg_catalog.int8":
-		return nullableType("int64", "*int64", "pgtype.Int8", notNull, emitPointersForNull)
+		return nullableType(goTypeInt64, "*int64", "pgtype.Int8", notNull, emitPointersForNull)
 	case "smallserial", "serial2", "pg_catalog.serial2", "smallint", "int2", "pg_catalog.int2":
 		return nullableType("int16", "*int16", "pgtype.Int2", notNull, emitPointersForNull)
 	case "float", "double precision", "float8", "pg_catalog.float8":
 		return nullableType("float64", "*float64", "pgtype.Float8", notNull, emitPointersForNull)
 	case "real", "float4", "pg_catalog.float4":
 		return nullableType("float32", "*float32", "pgtype.Float4", notNull, emitPointersForNull)
-	case "boolean", "bool", "pg_catalog.bool":
-		return nullableType("bool", "*bool", "pgtype.Bool", notNull, emitPointersForNull)
-	case "text", "pg_catalog.varchar", "pg_catalog.bpchar", "varchar", "string", "citext", "name":
-		return nullableType("string", "*string", "pgtype.Text", notNull, emitPointersForNull)
+	case "boolean", goTypeBool, "pg_catalog.bool":
+		return nullableType(goTypeBool, "*bool", "pgtype.Bool", notNull, emitPointersForNull)
+	case "text", "pg_catalog.varchar", "pg_catalog.bpchar", "varchar", goTypeString, "citext", "name":
+		return nullableType(goTypeString, "*string", "pgtype.Text", notNull, emitPointersForNull)
 	case "bytea", "blob", "pg_catalog.bytea":
 		return "[]byte"
 	case "json", "pg_catalog.json", "jsonb", "pg_catalog.jsonb":
@@ -172,7 +172,7 @@ func (r *typeResolver) postgresType(column *plugin.Column) string {
 	case "macaddr", "macaddr8":
 		return "net.HardwareAddr"
 	case "ltree", "lquery", "ltxtquery":
-		return nullableType("string", "*string", "pgtype.Text", notNull, emitPointersForNull)
+		return nullableType(goTypeString, "*string", "pgtype.Text", notNull, emitPointersForNull)
 	case "interval", "pg_catalog.interval":
 		return "pgtype.Interval"
 	case "daterange":
@@ -284,7 +284,7 @@ func (r *typeResolver) customPostgresType(
 			if composite.GetName() != typeName {
 				continue
 			}
-			return nullableStdlibType("string", "*string", "sql.NullString", notNull, emitPointersForNull)
+			return nullableStdlibType(goTypeString, "*string", "sql.NullString", notNull, emitPointersForNull)
 		}
 	}
 	return emptyInterfaceType

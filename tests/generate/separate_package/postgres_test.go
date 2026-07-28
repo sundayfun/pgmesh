@@ -49,7 +49,7 @@ func TestSeparatePackageStoreAgainstPostgres(t *testing.T) {
 
 	listed, err := queries.Users().ListUsersByIDs(
 		t.Context(),
-		[]*store.ListUsersByIDsShardParams{{
+		[]*store.ListUsersByIDsT{{
 			ID:       created.ID,
 			TenantID: created.TenantID,
 		}},
