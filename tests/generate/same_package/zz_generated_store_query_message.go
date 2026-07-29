@@ -68,11 +68,35 @@ type QueryMessage interface {
 	QueryMessageWriter
 }
 
+type telemetryQueryMessageStore[SK any] struct {
+	store  *meshStore[SK]
+	target QueryMessage
+}
+
+func (q *telemetryQueryMessageStore[SK]) ListP2PMessageIDsByChat(ctx context.Context, arg *ListP2PMessageIDsByChatT, storeOptions ...QueryOption) (result []interface{}, err error) {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "QueryMessage", "ListP2PMessageIDsByChat", pgmesh.QueryKindRead)
+	defer func() { storeSpan.End(err) }()
+	return q.target.ListP2PMessageIDsByChat(ctx, arg, storeOptions...)
+}
+
+func (q *telemetryQueryMessageStore[SK]) ListP2PMessagesByChat(ctx context.Context, arg *ListP2PMessagesByChatT, storeOptions ...QueryOption) (result []*Message, err error) {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "QueryMessage", "ListP2PMessagesByChat", pgmesh.QueryKindRead)
+	defer func() { storeSpan.End(err) }()
+	return q.target.ListP2PMessagesByChat(ctx, arg, storeOptions...)
+}
+
+// WithQueryMessageFactory configures an optional wrapper for the QueryMessage query group.
+// A nil factory leaves the generated query group unwrapped.
+func WithQueryMessageFactory(createQueryMessage func(QueryMessage) QueryMessage) StoreOption {
+	return func(options *storeOptions) { options.factories.QueryMessage = createQueryMessage }
+}
+
 var _ QueryMessage = (*groupedMeshStore[uint8])(nil)
+var _ QueryMessage = (*telemetryQueryMessageStore[uint8])(nil)
 
 // QueryMessage returns the QueryMessage query group.
 func (q *meshStore[SK]) QueryMessage() QueryMessage {
-	return &groupedMeshStore[SK]{store: q}
+	return q.groups.QueryMessage
 }
 
 // ListP2PMessageIDsByChat executes the generated query on its target shard.

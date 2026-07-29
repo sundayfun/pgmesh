@@ -22,6 +22,7 @@ The documentation is organized by what you are trying to learn or accomplish.
 - [Add read replicas](how-to/add-read-replicas.md)
 - [Expand shards with synchronous dual writes](how-to/add-write-mirrors.md)
 - [Use transactions](how-to/use-transactions.md)
+- [Add cache-aside behavior](how-to/add-cache-aside.md)
 - [Configure and regenerate code](how-to/configure-generation.md)
 - [Troubleshoot generation and routing](how-to/troubleshoot.md)
 

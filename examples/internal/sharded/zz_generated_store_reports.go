@@ -23,11 +23,29 @@ type Reports interface {
 	ReportsWriter
 }
 
+type telemetryReportsStore[SK any] struct {
+	store  *meshStore[SK]
+	target Reports
+}
+
+func (q *telemetryReportsStore[SK]) CountAccounts(ctx context.Context, tenantID int64, storeOptions ...QueryOption) (result int64, err error) {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Reports", "CountAccounts", pgmesh.QueryKindRead)
+	defer func() { storeSpan.End(err) }()
+	return q.target.CountAccounts(ctx, tenantID, storeOptions...)
+}
+
+// WithReportsFactory configures an optional wrapper for the Reports query group.
+// A nil factory leaves the generated query group unwrapped.
+func WithReportsFactory(createReports func(Reports) Reports) StoreOption {
+	return func(options *storeOptions) { options.factories.Reports = createReports }
+}
+
 var _ Reports = (*groupedMeshStore[uint8])(nil)
+var _ Reports = (*telemetryReportsStore[uint8])(nil)
 
 // Reports returns the Reports query group.
 func (q *meshStore[SK]) Reports() Reports {
-	return &groupedMeshStore[SK]{store: q}
+	return q.groups.Reports
 }
 
 // CountAccounts executes the generated query on its target shard.

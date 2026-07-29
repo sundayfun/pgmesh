@@ -59,11 +59,71 @@ type Users interface {
 	UsersWriter
 }
 
+type telemetryUsersStore[SK any] struct {
+	store  *meshStore[SK]
+	target Users
+}
+
+func (q *telemetryUsersStore[SK]) CopyUsers(ctx context.Context, arg []*CopyUsersT, storeOptions ...QueryOption) (result int64, err error) {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "CopyUsers", pgmesh.QueryKindWrite)
+	defer func() { storeSpan.End(err) }()
+	return q.target.CopyUsers(ctx, arg, storeOptions...)
+}
+
+func (q *telemetryUsersStore[SK]) CreateUser(ctx context.Context, arg *CreateUserT, storeOptions ...QueryOption) (result *User, err error) {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "CreateUser", pgmesh.QueryKindWrite)
+	defer func() { storeSpan.End(err) }()
+	return q.target.CreateUser(ctx, arg, storeOptions...)
+}
+
+func (q *telemetryUsersStore[SK]) DeleteAllUsers(ctx context.Context, storeOptions ...QueryOption) (err error) {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "DeleteAllUsers", pgmesh.QueryKindWrite)
+	defer func() { storeSpan.End(err) }()
+	return q.target.DeleteAllUsers(ctx, storeOptions...)
+}
+
+func (q *telemetryUsersStore[SK]) DeleteAllUsersByName(ctx context.Context, name string, storeOptions ...QueryOption) (result int64, err error) {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "DeleteAllUsersByName", pgmesh.QueryKindWrite)
+	defer func() { storeSpan.End(err) }()
+	return q.target.DeleteAllUsersByName(ctx, name, storeOptions...)
+}
+
+func (q *telemetryUsersStore[SK]) GetUser(ctx context.Context, arg *GetUserT, storeOptions ...QueryOption) (result *User, err error) {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "GetUser", pgmesh.QueryKindRead)
+	defer func() { storeSpan.End(err) }()
+	return q.target.GetUser(ctx, arg, storeOptions...)
+}
+
+func (q *telemetryUsersStore[SK]) ListAllUsers(ctx context.Context, storeOptions ...QueryOption) (result []*User, err error) {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "ListAllUsers", pgmesh.QueryKindRead)
+	defer func() { storeSpan.End(err) }()
+	return q.target.ListAllUsers(ctx, storeOptions...)
+}
+
+func (q *telemetryUsersStore[SK]) ListUsersByIDs(ctx context.Context, arg []*ListUsersByIDsT, storeOptions ...QueryOption) (result []*User, err error) {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "ListUsersByIDs", pgmesh.QueryKindRead)
+	defer func() { storeSpan.End(err) }()
+	return q.target.ListUsersByIDs(ctx, arg, storeOptions...)
+}
+
+func (q *telemetryUsersStore[SK]) UpdateUserName(ctx context.Context, arg *UpdateUserNameT, storeOptions ...QueryOption) (result *User, err error) {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "UpdateUserName", pgmesh.QueryKindWrite)
+	defer func() { storeSpan.End(err) }()
+	return q.target.UpdateUserName(ctx, arg, storeOptions...)
+}
+
+// WithUsersFactory configures an optional wrapper for the Users query group.
+// A nil factory leaves the generated query group unwrapped.
+func WithUsersFactory(createUsers func(Users) Users) StoreOption {
+	return func(options *storeOptions) { options.factories.Users = createUsers }
+}
+
 var _ Users = (*groupedMeshStore[uint8])(nil)
+var _ Users = (*telemetryUsersStore[uint8])(nil)
 
 // Users returns the Users query group.
 func (q *meshStore[SK]) Users() Users {
-	return &groupedMeshStore[SK]{store: q}
+	return q.groups.Users
 }
 
 // CopyUsers groups rows by physical shard and executes one copy per group.

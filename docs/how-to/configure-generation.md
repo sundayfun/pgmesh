@@ -120,15 +120,20 @@ The stable default public surface is:
 | --- | --- |
 | `Store` | Topology-independent root exposing every required query group |
 | `<Group>`, `<Group>Reader`, `<Group>Writer` | Combined and read/write-separated interfaces derived from `store` annotations |
-| `NewStore(ctx, topology, ...StoreOption)` | Store constructor and common telemetry options |
+| `With<Group>Factory(func(<Group>) <Group>)` | Optional per-group wrapper factory |
+| `NewStore(ctx, topology, ...StoreOption)` | Store constructor, group factories, and common telemetry options |
 | `Singleton(primary, ...SingletonOption)` | Single-primary topology with optional replicas and mirrors |
 | `Sharded(numVShards, hasher, resolver, ...ShardedOption)` | Sharded topology, emitted for routed stores |
 | `ReadFromPrimary`, `WithTx` | Per-query routing options |
 
 Repeated topology options append in call order. Common scalar store options,
-such as `WithLogger`, use the last supplied value. Option constructors clone
-slice inputs, and `NewStore` reports nil topology, singleton, sharded, or store
-options as configuration errors.
+such as `WithLogger` and `With<Group>Factory`, use the last supplied value.
+Group factories run once after successful topology construction, and a nil
+factory leaves that group unwrapped. A configured group is retained behind a
+generated telemetry facade that records `pgmesh.store.duration`, emits a
+`pgmesh.store.*` span, and reports `pgmesh.store.internal_executed`.
+Option constructors clone slice inputs, and `NewStore` reports nil topology,
+singleton, sharded, or store options as configuration errors.
 
 Internal sqlc integration is fixed to `Querier`, `Queries`, and `New`.
 Generated implementation names such as `queryStore`, `readQueries`,

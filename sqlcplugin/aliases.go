@@ -134,6 +134,7 @@ func validateSQLCTypeAliases(
 		declarations[group.name] = "store group " + group.name
 		declarations[storeReaderInterfaceName(group.name)] = "store group " + group.name
 		declarations[storeWriterInterfaceName(group.name)] = "store group " + group.name
+		declarations[storeFactoryOptionName(group.name)] = "store group " + group.name
 	}
 	for _, query := range queries {
 		if query.storeParamAlias != nil {

@@ -122,5 +122,7 @@ func (c shardedTopology[SK]) buildStore(ctx context.Context, options storeOption
 	if err != nil {
 		return nil, err
 	}
-	return &meshStore[SK]{mesh: mesh, resolver: c.resolver}, nil
+	store := &meshStore[SK]{mesh: mesh, resolver: c.resolver}
+	store.initializeGroups(options)
+	return store, nil
 }

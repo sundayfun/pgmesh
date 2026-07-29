@@ -339,6 +339,19 @@ func (r *recordingMessageKeyResolver) MessageKey(
 	return 0
 }
 
+type usersStoreWrapper struct {
+	Users
+
+	listed []*User
+}
+
+func (s *usersStoreWrapper) ListAllUsers(
+	context.Context,
+	...QueryOption,
+) ([]*User, error) {
+	return s.listed, nil
+}
+
 func buildTestStore(t *testing.T, primary, replica *fakeDB, mirrors ...*fakeDB) Store {
 	t.Helper()
 
@@ -363,6 +376,139 @@ func buildTestStore(t *testing.T, primary, replica *fakeDB, mirrors ...*fakeDB) 
 	)
 	require.NoError(t, err)
 	return store
+}
+
+func TestGeneratedStoreFactoriesWrapSelectedGroupsOnce(t *testing.T) {
+	t.Parallel()
+
+	topologies := []struct {
+		name   string
+		create func(*fakeDB) Topology
+	}{
+		{
+			name: "singleton",
+			create: func(primary *fakeDB) Topology {
+				return Singleton(primary)
+			},
+		},
+		{
+			name: "sharded",
+			create: func(primary *fakeDB) Topology {
+				return Sharded(
+					1,
+					pgmesh.ConstantShardHashFor[uint64](0),
+					tenantResolver{},
+					WithReplicaSet("main", primary),
+					WithVShardMapping("main", []uint64{0}),
+				)
+			},
+		},
+	}
+
+	for _, topology := range topologies {
+		t.Run(topology.name, func(t *testing.T) {
+			t.Parallel()
+
+			log := &callLog{}
+			primary := &fakeDB{
+				name:  "primary",
+				log:   log,
+				users: []*User{{ID: 1, TenantID: 2, Name: "database"}},
+			}
+			cached := []*User{{ID: 10, TenantID: 20, Name: "cached"}}
+			factoryCalls := 0
+			var wrapper *usersStoreWrapper
+
+			store, err := NewStore(
+				t.Context(),
+				topology.create(primary),
+				WithUsersFactory(func(internalStore Users) Users {
+					factoryCalls++
+					wrapper = &usersStoreWrapper{Users: internalStore, listed: cached}
+					return wrapper
+				}),
+			)
+			require.NoError(t, err)
+			assert.Equal(t, 1, factoryCalls)
+			firstUsers := store.Users()
+			assert.Same(t, firstUsers, store.Users())
+			assert.NotSame(t, wrapper, firstUsers, "generated telemetry retains a stable facade")
+			firstAnalyses := store.Analyses()
+			secondAnalyses := store.Analyses()
+			assert.Same(t, firstAnalyses, secondAnalyses)
+
+			listed, err := store.Users().ListAllUsers(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, cached, listed)
+			assert.Empty(t, log.snapshot())
+
+			user, err := store.Users().GetUser(
+				t.Context(),
+				&GetUserParams{ID: 1, TenantID: 2},
+			)
+			require.NoError(t, err)
+			assert.Equal(t, int64(10), user.ID)
+			assert.Equal(t, []string{"primary"}, log.snapshot())
+		})
+	}
+}
+
+func TestGeneratedStoreFactoryOptionsUseLastValue(t *testing.T) {
+	t.Parallel()
+
+	primary := &fakeDB{name: "primary", log: &callLog{}}
+	firstCalls := 0
+	secondCalls := 0
+	firstFactory := WithUsersFactory(func(internalStore Users) Users {
+		firstCalls++
+		return &usersStoreWrapper{Users: internalStore}
+	})
+	var secondWrapper *usersStoreWrapper
+	secondFactory := WithUsersFactory(func(internalStore Users) Users {
+		secondCalls++
+		secondWrapper = &usersStoreWrapper{Users: internalStore}
+		return secondWrapper
+	})
+
+	store, err := NewStore(
+		t.Context(),
+		Singleton(primary),
+		firstFactory,
+		secondFactory,
+	)
+	require.NoError(t, err)
+	assert.Zero(t, firstCalls)
+	assert.Equal(t, 1, secondCalls)
+	users := store.Users()
+	assert.NotSame(t, secondWrapper, users, "generated telemetry wraps the selected factory")
+	assert.Same(t, users, store.Users())
+
+	cleared, err := NewStore(
+		t.Context(),
+		Singleton(primary),
+		firstFactory,
+		WithUsersFactory(nil),
+	)
+	require.NoError(t, err)
+	assert.Zero(t, firstCalls)
+	_, internal := cleared.Users().(*groupedMeshStore[uint8])
+	assert.True(t, internal)
+}
+
+func TestGeneratedStoreFactoryRunsOnlyAfterSuccessfulTopologyBuild(t *testing.T) {
+	t.Parallel()
+
+	factoryCalls := 0
+	_, err := NewStore(
+		t.Context(),
+		Singleton(nil),
+		WithUsersFactory(func(internalStore Users) Users {
+			factoryCalls++
+			return internalStore
+		}),
+	)
+	require.ErrorContains(t, err, "database primary is nil")
+	assert.Zero(t, factoryCalls)
 }
 
 func buildTwoShardStore(
@@ -1098,8 +1244,10 @@ func TestGeneratedStoreTelemetryWiring(t *testing.T) {
 	for index, expected := range expectedSpans {
 		assert.Equal(t, "pgmesh.query.Users."+expected.query, spans[index].Name())
 		attributes := telemetryAttributeMap(spans[index].Attributes())
+		assert.Equal(t, "Users", attributes[pgmesh.AttributeStoreName].AsString())
 		assert.Equal(t, expected.query, attributes[pgmesh.AttributeQueryName].AsString())
 		assert.Equal(t, expected.kind, attributes[pgmesh.AttributeQueryKind].AsString())
+		assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeInternalStoreExecuted))
 		assert.Equal(t, "main", attributes[pgmesh.AttributeReplicaSet].AsString())
 		assert.Equal(t, expected.mode, attributes[pgmesh.AttributeRouteMode].AsString())
 		assert.NotContains(t, attributes, attribute.Key("pgmesh.route.write_mirror_count"))
@@ -1116,6 +1264,9 @@ func TestGeneratedStoreTelemetryWiring(t *testing.T) {
 	var measurementCount uint64
 	for _, point := range histogram.DataPoints {
 		measurementCount += point.Count
+		attributes := telemetryAttributeMap(point.Attributes.ToSlice())
+		assert.Equal(t, "Users", attributes[pgmesh.AttributeStoreName].AsString())
+		assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeInternalStoreExecuted))
 	}
 	assert.Equal(t, uint64(len(expectedSpans)), measurementCount)
 
@@ -1124,11 +1275,108 @@ func TestGeneratedStoreTelemetryWiring(t *testing.T) {
 	for index, line := range logLines {
 		var record map[string]any
 		require.NoError(t, json.Unmarshal([]byte(line), &record))
+		assert.Equal(t, "Users", record["store_name"])
 		assert.Equal(t, expectedSpans[index].query, record["query_name"])
 		assert.Equal(t, expectedSpans[index].mode, record["route_mode"])
+		assert.NotContains(t, record, "internal_store_executed")
 		assert.NotContains(t, record, "write_mirror_count")
 		assert.Equal(t, expectedSpans[index].status == codes.Error, record["failed"])
 	}
+}
+
+func TestGeneratedStoreFactoryTelemetrySeparatesCacheAndInternalQuerySignals(t *testing.T) {
+	t.Parallel()
+
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	t.Cleanup(func() { require.NoError(t, tracerProvider.Shutdown(context.Background())) })
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { require.NoError(t, meterProvider.Shutdown(context.Background())) })
+	var logOutput bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logOutput, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	callLog := &callLog{}
+	cached := []*User{{ID: 10, TenantID: 20, Name: "cached"}}
+	store, err := NewStore(
+		t.Context(),
+		Singleton(&fakeDB{name: "primary", log: callLog}),
+		WithTracerProvider(tracerProvider),
+		WithMeterProvider(meterProvider),
+		WithLogger(logger),
+		WithUsersFactory(func(internalStore Users) Users {
+			return &usersStoreWrapper{Users: internalStore, listed: cached}
+		}),
+	)
+	require.NoError(t, err)
+
+	listed, err := store.Users().ListAllUsers(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, cached, listed)
+	_, err = store.Users().GetUser(
+		t.Context(),
+		&GetUserParams{ID: 1, TenantID: 2},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"primary"}, callLog.snapshot())
+
+	spans := recorder.Ended()
+	require.Len(t, spans, 3)
+	assert.Equal(t, "pgmesh.store.Users.ListAllUsers", spans[0].Name())
+	hitAttributes := telemetryAttributeMap(spans[0].Attributes())
+	assert.Equal(t, "ListAllUsers", hitAttributes[pgmesh.AttributeQueryName].AsString())
+	assert.False(t, hitAttributes[pgmesh.AttributeInternalStoreExecuted].AsBool())
+	assert.NotContains(t, hitAttributes, attribute.Key(pgmesh.AttributeReplicaSet))
+	assert.NotContains(t, hitAttributes, attribute.Key(pgmesh.AttributeRouteMode))
+	assert.Equal(t, "pgmesh.query.Users.GetUser", spans[1].Name())
+	queryAttributes := telemetryAttributeMap(spans[1].Attributes())
+	assert.Equal(t, "GetUser", queryAttributes[pgmesh.AttributeQueryName].AsString())
+	assert.NotContains(t, queryAttributes, attribute.Key(pgmesh.AttributeInternalStoreExecuted))
+	assert.Equal(t, "default", queryAttributes[pgmesh.AttributeReplicaSet].AsString())
+	assert.Equal(t, "read", queryAttributes[pgmesh.AttributeRouteMode].AsString())
+	assert.Equal(t, "pgmesh.store.Users.GetUser", spans[2].Name())
+	missAttributes := telemetryAttributeMap(spans[2].Attributes())
+	assert.Equal(t, "GetUser", missAttributes[pgmesh.AttributeQueryName].AsString())
+	assert.True(t, missAttributes[pgmesh.AttributeInternalStoreExecuted].AsBool())
+	assert.NotContains(t, missAttributes, attribute.Key(pgmesh.AttributeReplicaSet))
+	assert.NotContains(t, missAttributes, attribute.Key(pgmesh.AttributeRouteMode))
+	assert.Equal(t, spans[2].SpanContext().SpanID(), spans[1].Parent().SpanID())
+
+	var metrics metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(t.Context(), &metrics))
+	require.Len(t, metrics.ScopeMetrics, 1)
+	require.Len(t, metrics.ScopeMetrics[0].Metrics, 2)
+	storeHistogram := telemetryHistogram(t, metrics, pgmesh.MetricStoreDuration)
+	require.Len(t, storeHistogram.DataPoints, 2)
+	metricExecutions := make(map[string]bool, 2)
+	for _, point := range storeHistogram.DataPoints {
+		attributes := telemetryAttributeMap(point.Attributes.ToSlice())
+		metricExecutions[attributes[pgmesh.AttributeQueryName].AsString()] = attributes[pgmesh.AttributeInternalStoreExecuted].AsBool()
+	}
+	assert.Equal(t, map[string]bool{"ListAllUsers": false, "GetUser": true}, metricExecutions)
+	queryHistogram := telemetryHistogram(t, metrics, pgmesh.MetricQueryDuration)
+	require.Len(t, queryHistogram.DataPoints, 1)
+	queryMetricAttributes := telemetryAttributeMap(queryHistogram.DataPoints[0].Attributes.ToSlice())
+	assert.Equal(t, "GetUser", queryMetricAttributes[pgmesh.AttributeQueryName].AsString())
+	assert.Equal(t, "default", queryMetricAttributes[pgmesh.AttributeReplicaSet].AsString())
+	assert.NotContains(t, queryMetricAttributes, attribute.Key(pgmesh.AttributeInternalStoreExecuted))
+
+	logLines := strings.Split(strings.TrimSpace(logOutput.String()), "\n")
+	require.Len(t, logLines, 3)
+	var hitLog map[string]any
+	require.NoError(t, json.Unmarshal([]byte(logLines[0]), &hitLog))
+	assert.Equal(t, "pgmesh store completed", hitLog["msg"])
+	assert.Equal(t, false, hitLog["internal_store_executed"])
+	var queryLog map[string]any
+	require.NoError(t, json.Unmarshal([]byte(logLines[1]), &queryLog))
+	assert.Equal(t, "pgmesh query completed", queryLog["msg"])
+	assert.Equal(t, "default", queryLog["replica_set"])
+	assert.NotContains(t, queryLog, "internal_store_executed")
+	var missLog map[string]any
+	require.NoError(t, json.Unmarshal([]byte(logLines[2]), &missLog))
+	assert.Equal(t, "pgmesh store completed", missLog["msg"])
+	assert.Equal(t, true, missLog["internal_store_executed"])
+	assert.NotContains(t, missLog, "replica_set")
 }
 
 func telemetryAttributeMap(items []attribute.KeyValue) map[attribute.Key]attribute.Value {
@@ -1137,6 +1385,27 @@ func telemetryAttributeMap(items []attribute.KeyValue) map[attribute.Key]attribu
 		attributes[item.Key] = item.Value
 	}
 	return attributes
+}
+
+func telemetryHistogram(
+	t *testing.T,
+	metrics metricdata.ResourceMetrics,
+	name string,
+) metricdata.Histogram[float64] {
+	t.Helper()
+
+	for _, scope := range metrics.ScopeMetrics {
+		for _, measurement := range scope.Metrics {
+			if measurement.Name != name {
+				continue
+			}
+			histogram, ok := measurement.Data.(metricdata.Histogram[float64])
+			require.True(t, ok)
+			return histogram
+		}
+	}
+	require.FailNow(t, "metric not found", name)
+	return metricdata.Histogram[float64]{}
 }
 
 func TestGeneratedStoreBehavior(t *testing.T) {

@@ -80,9 +80,14 @@ type storeOptions struct {
 	tracerProvider trace.TracerProvider
 	meterProvider  metric.MeterProvider
 	logger         *slog.Logger
+	factories      struct {
+		Analyses     func(Analyses) Analyses
+		QueryMessage func(QueryMessage) QueryMessage
+		Users        func(Users) Users
+	}
 }
 
-// StoreOption customizes telemetry for a generated store.
+// StoreOption customizes a generated store.
 type StoreOption func(*storeOptions)
 
 // WithTracerProvider configures the provider used for routed query spans.
@@ -179,12 +184,35 @@ func NewStore(ctx context.Context, topology Topology, options ...StoreOption) (S
 type meshStore[SK any] struct {
 	mesh     *pgmesh.Mesh[*readQueries, *queryStore, SK]
 	resolver ShardResolver[SK]
+	groups   struct {
+		Analyses     Analyses
+		QueryMessage QueryMessage
+		Users        Users
+	}
 }
 
 var _ Store = (*meshStore[uint8])(nil)
 
 type groupedMeshStore[SK any] struct {
 	store *meshStore[SK]
+}
+
+func (q *meshStore[SK]) initializeGroups(options storeOptions) {
+	internalAnalyses := &groupedMeshStore[SK]{store: q}
+	q.groups.Analyses = internalAnalyses
+	if createAnalyses := options.factories.Analyses; createAnalyses != nil {
+		q.groups.Analyses = &telemetryAnalysesStore[SK]{store: q, target: createAnalyses(internalAnalyses)}
+	}
+	internalQueryMessage := &groupedMeshStore[SK]{store: q}
+	q.groups.QueryMessage = internalQueryMessage
+	if createQueryMessage := options.factories.QueryMessage; createQueryMessage != nil {
+		q.groups.QueryMessage = &telemetryQueryMessageStore[SK]{store: q, target: createQueryMessage(internalQueryMessage)}
+	}
+	internalUsers := &groupedMeshStore[SK]{store: q}
+	q.groups.Users = internalUsers
+	if createUsers := options.factories.Users; createUsers != nil {
+		q.groups.Users = &telemetryUsersStore[SK]{store: q, target: createUsers(internalUsers)}
+	}
 }
 
 func (c singletonTopology) buildStore(_ context.Context, options storeOptions) (Store, error) {
@@ -229,5 +257,7 @@ func (c singletonTopology) buildStore(_ context.Context, options storeOptions) (
 	if err != nil {
 		return nil, err
 	}
-	return &meshStore[uint8]{mesh: mesh}, nil
+	store := &meshStore[uint8]{mesh: mesh}
+	store.initializeGroups(options)
+	return store, nil
 }

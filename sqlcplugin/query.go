@@ -181,6 +181,7 @@ func collectStoreGroups(queries []generatedQuery, opts *options) ([]storeGroup, 
 			group.name,
 			storeReaderInterfaceName(group.name),
 			storeWriterInterfaceName(group.name),
+			storeFactoryOptionName(group.name),
 		} {
 			if previous, exists := declarations[declaration]; exists {
 				return nil, fmt.Errorf(
@@ -228,6 +229,14 @@ func storeReaderInterfaceName(group string) string {
 
 func storeWriterInterfaceName(group string) string {
 	return group + "Writer"
+}
+
+func storeFactoryOptionName(group string) string {
+	return "With" + group + "Factory"
+}
+
+func storeTelemetryTypeName(group string) string {
+	return "telemetry" + group + "Store"
 }
 
 func sameRouteSignature(left, right shardRoute) bool {

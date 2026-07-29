@@ -231,8 +231,24 @@ func TestGenerateGroupsPublicStoreQueries(t *testing.T) {
 
 	assert.Contains(t, got, "type groupedMeshStore[SK any] struct")
 	assert.Contains(t, got, "var _ Accounts = (*groupedMeshStore[uint8])(nil)")
+	assert.Contains(t, got, "func WithAccountsFactory(createAccounts func(Accounts) Accounts) StoreOption")
+	assert.Contains(t, got, "func WithSystemFactory(createSystem func(System) System) StoreOption")
+	assert.Contains(t, got, "Accounts func(Accounts) Accounts")
+	assert.Contains(t, got, "System   func(System) System")
+	assert.Contains(t, got, "internalAccounts := &groupedMeshStore[SK]{store: q}")
+	assert.Contains(
+		t,
+		got,
+		"q.groups.Accounts = &telemetryAccountsStore[SK]{store: q, target: createAccounts(internalAccounts)}",
+	)
+	assert.Contains(t, got, "type telemetryAccountsStore[SK any] struct")
+	telemetryBody := generatedMethodBody(t, got, "telemetryAccountsStore[SK]", "GetAccount")
+	assert.Contains(t, telemetryBody, `q.store.mesh.StartStoreSpan(ctx, "Accounts", "GetAccount"`)
+	assert.Contains(t, telemetryBody, "defer func() { storeSpan.End(err) }()")
+	assert.Contains(t, telemetryBody, "return q.target.GetAccount(ctx, storeOptions...)")
 	assert.Contains(t, got, "func (q *meshStore[SK]) Accounts() Accounts")
-	assert.Contains(t, got, "return &groupedMeshStore[SK]{store: q}")
+	assert.Contains(t, got, "return q.groups.Accounts")
+	assert.Equal(t, 1, strings.Count(got, "store.initializeGroups(options)"))
 	assert.Contains(
 		t,
 		got,
@@ -240,6 +256,8 @@ func TestGenerateGroupsPublicStoreQueries(t *testing.T) {
 	)
 	groupedBody := generatedMethodBody(t, got, "groupedMeshStore[SK]", "GetAccount")
 	assert.Contains(t, groupedBody, "q.store.mesh.StartSpan")
+	assert.NotContains(t, groupedBody, "StartOrReuseSpan")
+	assert.NotContains(t, groupedBody, "SetInternalStoreExecuted")
 	assert.Contains(t, groupedBody, "q.store.mesh.Shard")
 	assert.NotContains(t, groupedBody, "q.mesh")
 	assert.Contains(t, got, "func (q *groupedMeshStore[SK]) Ping(")
@@ -318,6 +336,27 @@ func TestGenerateRejectsInvalidStoreGroups(t *testing.T) {
 				query("GetAccountAudit", "AccountsReader"),
 			),
 			want: "declaration AccountsReader",
+		},
+		{
+			name: "another group factory",
+			request: request(
+				query("GetAccount", "Accounts"),
+				query("GetFactoryStatus", "WithAccountsFactory"),
+			),
+			want: "declaration WithAccountsFactory",
+		},
+		{
+			name: "configured public symbol",
+			request: func() *plugin.GenerateRequest {
+				result := request(query("GetAccount", "Accounts"))
+				result.PluginOptions = []byte(`{
+					"package":"db",
+					"sql_package":"pgx/v5",
+					"constructor":"WithAccountsFactory"
+				}`)
+				return result
+			}(),
+			want: "conflicts with constructor",
 		},
 	}
 
@@ -699,6 +738,7 @@ func TestGenerateShardRoutedFacade(t *testing.T) {
 			"\tP2P(userID int64, peerID int64) SK\n}",
 		"type meshStore[SK any] struct",
 		"type Store interface",
+		"func WithMessagesFactory(createMessages func(Messages) Messages) StoreOption",
 		"func ReadFromPrimary() QueryOption",
 		"func WithTx(tx pgx.Tx) QueryOption",
 		"type ListP2PMessagesT = ListP2PMessagesParams",
@@ -722,6 +762,7 @@ func TestGenerateShardRoutedFacade(t *testing.T) {
 	for _, check := range checks {
 		assert.Contains(t, got, check)
 	}
+	assert.Equal(t, 2, strings.Count(got, "store.initializeGroups(options)"))
 	assert.NotContains(t, got, "WriteMirrorCount()")
 	assert.NotContains(t, got, "writeMirrorCount")
 	meshReadBody := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListP2PMessages")
@@ -1511,6 +1552,8 @@ func TestGenerateEmptyQuerySetStillEmitsStoreConfiguration(t *testing.T) {
 		generatedSource(response),
 		"func NewStore(ctx context.Context, topology Topology, options ...StoreOption) (Store, error)",
 	)
+	assert.NotContains(t, generatedSource(response), "Factory(")
+	assert.NotContains(t, generatedSource(response), "initializeGroups")
 }
 
 func TestGenerateRejectsInvalidRoutingConfigurations(t *testing.T) {
@@ -1999,6 +2042,18 @@ func TestGenerateSupportsAllNodeLevelCommands(t *testing.T) {
 		for _, want := range test.body {
 			assert.Contains(t, body, want, "command %s body", test.command)
 		}
+		telemetryBody := generatedMethodBody(
+			t,
+			got,
+			"telemetryCommandsStore[SK]",
+			fmt.Sprintf("Query%d", index),
+		)
+		assert.Contains(t, telemetryBody, "q.target.Query")
+		if strings.HasPrefix(test.command, ":batch") {
+			assert.NotContains(t, telemetryBody, "StartSpan")
+		} else {
+			assert.Contains(t, telemetryBody, "StartStoreSpan")
+		}
 	}
 }
 
@@ -2216,6 +2271,47 @@ func TestGenerateRejectsExportedSQLCTypeNameConflicts(t *testing.T) {
 		t,
 		err,
 		"export_sqlc_types cannot alias sqlc type Store because it conflicts with store interface",
+	)
+}
+
+func TestGenerateRejectsExportedSQLCFactoryNameConflict(t *testing.T) {
+	t.Parallel()
+
+	factoryType := &plugin.Identifier{Schema: "public", Name: "with_users_factory"}
+	_, err := Generate(t.Context(), &plugin.GenerateRequest{
+		Settings: &plugin.Settings{Engine: "postgresql", Codegen: &plugin.Codegen{Out: "store"}},
+		Catalog: &plugin.Catalog{
+			DefaultSchema: "public",
+			Schemas: []*plugin.Schema{{
+				Name: "public",
+				Enums: []*plugin.Enum{{
+					Name: "with_users_factory",
+					Vals: []string{"enabled"},
+				}},
+			}},
+		},
+		Queries: []*plugin.Query{{
+			Name:     "GetFactoryMode",
+			Cmd:      ":one",
+			Comments: []string{"kind: read", "store: Users"},
+			Columns: []*plugin.Column{{
+				Name:    "factory_mode",
+				Type:    factoryType,
+				NotNull: true,
+			}},
+		}},
+		PluginOptions: []byte(`{
+			"package":"store",
+			"internal_import_path":"example.test/project/internal/db",
+			"export_sqlc_types":true,
+			"sql_package":"pgx/v5"
+		}`),
+	})
+
+	require.ErrorContains(
+		t,
+		err,
+		"export_sqlc_types cannot alias sqlc type WithUsersFactory because it conflicts with store group Users",
 	)
 }
 

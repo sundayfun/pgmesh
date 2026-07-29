@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -21,8 +22,14 @@ const instrumentationName = "github.com/sundayfun/pgmesh"
 // MeterProvider owns exporting and shutdown; pgmesh never shuts it down.
 const MetricQueryDuration = "pgmesh.query.duration"
 
-// OpenTelemetry attribute keys recorded on routed query telemetry.
+// MetricStoreDuration is the OpenTelemetry histogram of factory-wrapped store
+// method durations in seconds. Its count reports completed wrapper throughput.
+const MetricStoreDuration = "pgmesh.store.duration"
+
+// OpenTelemetry attribute keys recorded on store and routed query telemetry.
 const (
+	// AttributeStoreName identifies the generated store query group.
+	AttributeStoreName = "pgmesh.store.name"
 	// AttributeQueryName identifies the generated query method.
 	AttributeQueryName = "pgmesh.query.name"
 	// AttributeQueryKind identifies whether a routed query is a read or write.
@@ -31,6 +38,9 @@ const (
 	AttributeReplicaSet = "pgmesh.route.replica_set"
 	// AttributeRouteMode identifies the database path selected for a query.
 	AttributeRouteMode = "pgmesh.route.mode"
+	// AttributeInternalStoreExecuted reports whether a factory wrapper entered
+	// the generated internal store implementation.
+	AttributeInternalStoreExecuted = "pgmesh.store.internal_executed"
 )
 
 // QueryKind classifies a routed query as a read or write.
@@ -59,6 +69,7 @@ const (
 
 type queryTelemetry struct {
 	tracer        trace.Tracer
+	storeDuration metric.Float64Histogram
 	queryDuration metric.Float64Histogram
 	logger        *slog.Logger
 }
@@ -75,6 +86,26 @@ type QuerySpan struct {
 	logger        *slog.Logger
 	logAttributes []slog.Attr
 }
+
+// StoreSpan records tracing, metrics, and logging around one factory-wrapped
+// generated store method. The generated wrapper calls End exactly once.
+type StoreSpan struct {
+	ctx           context.Context
+	span          trace.Span
+	storeDuration metric.Float64Histogram
+	started       time.Time
+	attributes    []attribute.KeyValue
+	logger        *slog.Logger
+	logAttributes []slog.Attr
+	execution     *internalExecutionState
+}
+
+type internalExecutionState struct {
+	owner    any
+	executed atomic.Bool
+}
+
+type internalExecutionContextKey struct{}
 
 func newQueryTelemetry(
 	tracerProvider trace.TracerProvider,
@@ -118,7 +149,62 @@ func (t *queryTelemetry) setMeterProvider(provider metric.MeterProvider) error {
 		return err
 	}
 	t.queryDuration = queryDuration
+	storeDuration, err := meter.Float64Histogram(
+		MetricStoreDuration,
+		metric.WithDescription("Duration of factory-wrapped pgmesh store methods"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(
+			0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10,
+		),
+	)
+	if err != nil {
+		return err
+	}
+	t.storeDuration = storeDuration
 	return nil
+}
+
+// StartStoreSpan starts telemetry around a factory-wrapped generated store
+// method. Generated internal methods mark the returned event through ctx while
+// creating their own child query spans.
+//
+//nolint:spancheck // The generated caller ends the returned StoreSpan.
+func (m *Mesh[R, W, SK]) StartStoreSpan(
+	ctx context.Context,
+	storeName string,
+	queryName string,
+	kind QueryKind,
+) (context.Context, *StoreSpan) {
+	attributes := []attribute.KeyValue{
+		attribute.String(AttributeStoreName, storeName),
+		attribute.String(AttributeQueryName, queryName),
+		attribute.String(AttributeQueryKind, string(kind)),
+	}
+	ctx, span := m.telemetry.tracer.Start(
+		ctx,
+		"pgmesh.store."+storeName+"."+queryName,
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(attributes...),
+	)
+	execution := &internalExecutionState{
+		owner:    m,
+		executed: atomic.Bool{},
+	}
+	ctx = context.WithValue(ctx, internalExecutionContextKey{}, execution)
+	return ctx, &StoreSpan{
+		ctx:           ctx,
+		span:          span,
+		storeDuration: m.telemetry.storeDuration,
+		started:       time.Now(),
+		attributes:    attributes,
+		logger:        m.telemetry.logger,
+		logAttributes: []slog.Attr{
+			slog.String("store_name", storeName),
+			slog.String("query_name", queryName),
+			slog.String("query_kind", string(kind)),
+		},
+		execution: execution,
+	}
 }
 
 // StartSpan starts telemetry for a routed query and returns the span context so
@@ -131,7 +217,12 @@ func (m *Mesh[R, W, SK]) StartSpan(
 	queryName string,
 	kind QueryKind,
 ) (context.Context, *QuerySpan) {
+	if execution, ok := ctx.Value(internalExecutionContextKey{}).(*internalExecutionState); ok &&
+		execution.owner == m {
+		execution.executed.Store(true)
+	}
 	attributes := []attribute.KeyValue{
+		attribute.String(AttributeStoreName, storeName),
 		attribute.String(AttributeQueryName, queryName),
 		attribute.String(AttributeQueryKind, string(kind)),
 	}
@@ -149,6 +240,7 @@ func (m *Mesh[R, W, SK]) StartSpan(
 		attributes:    attributes,
 		logger:        m.telemetry.logger,
 		logAttributes: []slog.Attr{
+			slog.String("store_name", storeName),
 			slog.String("query_name", queryName),
 			slog.String("query_kind", string(kind)),
 		},
@@ -215,6 +307,45 @@ func (s *QuerySpan) End(err error) {
 			logAttributes = append(logAttributes, slog.Any("error", err))
 		}
 		s.logger.LogAttrs(s.ctx, slog.LevelDebug, "pgmesh query completed", logAttributes...)
+	}
+	s.span.End()
+}
+
+// End records metrics and a debug log, records err if present, then ends the
+// factory-wrapped store span. The configured providers and logger remain
+// caller-owned.
+func (s *StoreSpan) End(err error) {
+	duration := time.Since(s.started)
+	internalStoreExecuted := s.execution.executed.Load()
+	executionAttribute := attribute.Bool(
+		AttributeInternalStoreExecuted,
+		internalStoreExecuted,
+	)
+	s.span.SetAttributes(executionAttribute)
+	metricAttributes := append(
+		append([]attribute.KeyValue(nil), s.attributes...),
+		executionAttribute,
+	)
+	if err != nil {
+		errorType := semconv.ErrorType(err)
+		s.span.RecordError(err)
+		s.span.SetAttributes(errorType)
+		s.span.SetStatus(codes.Error, err.Error())
+		metricAttributes = append(metricAttributes, errorType)
+	}
+	recordOptions := metric.WithAttributes(metricAttributes...)
+	s.storeDuration.Record(s.ctx, duration.Seconds(), recordOptions)
+	if s.logger != nil && s.logger.Enabled(s.ctx, slog.LevelDebug) {
+		logAttributes := append(
+			append([]slog.Attr(nil), s.logAttributes...),
+			slog.Bool("internal_store_executed", internalStoreExecuted),
+			slog.Bool("failed", err != nil),
+			slog.Duration("duration", duration),
+		)
+		if err != nil {
+			logAttributes = append(logAttributes, slog.Any("error", err))
+		}
+		s.logger.LogAttrs(s.ctx, slog.LevelDebug, "pgmesh store completed", logAttributes...)
 	}
 	s.span.End()
 }

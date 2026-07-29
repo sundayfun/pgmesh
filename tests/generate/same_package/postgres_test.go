@@ -5,6 +5,8 @@ package samepackage_test
 import (
 	"context"
 	"net/netip"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +15,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/sundayfun/pgmesh"
 	fixture "github.com/sundayfun/pgmesh/tests/generate/same_package"
@@ -36,6 +40,72 @@ type postgresHarness struct {
 type postgresCase struct {
 	*postgresHarness
 	queries fixture.Store
+}
+
+type cachedUserKey struct {
+	tenantID int64
+	id       int64
+}
+
+type cachedUsersStore struct {
+	fixture.Users
+
+	mu    sync.Mutex
+	users map[cachedUserKey]*fixture.User
+	hits  int
+}
+
+func (s *cachedUsersStore) GetUser(
+	ctx context.Context,
+	arg *fixture.GetUserT,
+	options ...fixture.QueryOption,
+) (*fixture.User, error) {
+	if len(options) != 0 {
+		return s.Users.GetUser(ctx, arg, options...)
+	}
+
+	key := cachedUserKey{tenantID: arg.TenantID, id: arg.ID}
+	s.mu.Lock()
+	user := s.users[key]
+	if user != nil {
+		s.hits++
+	}
+	s.mu.Unlock()
+	if user != nil {
+		return user, nil
+	}
+
+	user, err := s.Users.GetUser(ctx, arg, fixture.ReadFromPrimary())
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.users[key] = user
+	s.mu.Unlock()
+	return user, nil
+}
+
+func (s *cachedUsersStore) UpdateUserName(
+	ctx context.Context,
+	arg *fixture.UpdateUserNameT,
+	options ...fixture.QueryOption,
+) (*fixture.User, error) {
+	user, err := s.Users.UpdateUserName(ctx, arg, options...)
+	if err != nil {
+		return user, err
+	}
+
+	key := cachedUserKey{tenantID: arg.TenantID, id: arg.ID}
+	s.mu.Lock()
+	delete(s.users, key)
+	s.mu.Unlock()
+	return user, nil
+}
+
+func (s *cachedUsersStore) cacheHits() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hits
 }
 
 func newPostgresHarness(t *testing.T) *postgresHarness {
@@ -67,7 +137,10 @@ func newPostgresHarness(t *testing.T) *postgresHarness {
 	return &postgresHarness{pools: pools}
 }
 
-func (h *postgresHarness) newShardedStore(t *testing.T) fixture.Store {
+func (h *postgresHarness) newShardedStore(
+	t *testing.T,
+	options ...fixture.StoreOption,
+) fixture.Store {
 	t.Helper()
 	queries, err := fixture.NewStore(
 		t.Context(),
@@ -86,6 +159,7 @@ func (h *postgresHarness) newShardedStore(t *testing.T) fixture.Store {
 			fixture.WithVShardMapping("shard0", []uint64{0}, "shard0-mirror"),
 			fixture.WithVShardMapping("shard1", []uint64{1}),
 		),
+		options...,
 	)
 	require.NoError(t, err)
 	return queries
@@ -134,6 +208,113 @@ func (h *postgresHarness) assertUserAbsent(t *testing.T, database string, id, te
 		tenantID,
 	).Scan(&ignored)
 	require.ErrorIs(t, err, pgx.ErrNoRows, "user unexpectedly exists in %s", database)
+}
+
+func TestPostgresStoreFactoryIntegration(t *testing.T) {
+	harness := newPostgresHarness(t)
+	harness.reset(t)
+	harness.insert(t, "shard0-primary", 90, 2, "before")
+
+	factoryCalls := 0
+	var cachedUsers *cachedUsersStore
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	t.Cleanup(func() { require.NoError(t, tracerProvider.Shutdown(context.Background())) })
+	queries := harness.newShardedStore(
+		t,
+		fixture.WithTracerProvider(tracerProvider),
+		fixture.WithUsersFactory(func(internalStore fixture.Users) fixture.Users {
+			factoryCalls++
+			cachedUsers = &cachedUsersStore{
+				Users: internalStore,
+				users: make(map[cachedUserKey]*fixture.User),
+			}
+			return cachedUsers
+		}),
+	)
+
+	require.Equal(t, 1, factoryCalls)
+	firstUsers := queries.Users()
+	assert.Same(t, firstUsers, queries.Users())
+	assert.NotSame(t, cachedUsers, firstUsers, "generated telemetry retains a stable facade")
+
+	arg := &fixture.GetUserParams{TenantID: 2, ID: 90}
+	first, err := queries.Users().GetUser(t.Context(), arg)
+	require.NoError(t, err)
+	assert.Equal(t, "before", first.Name)
+	assert.Zero(t, cachedUsers.cacheHits())
+
+	updated, err := queries.Users().UpdateUserName(
+		t.Context(),
+		&fixture.UpdateUserNameParams{TenantID: 2, ID: 90, Name: "after"},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "after", updated.Name)
+	assert.Equal(t, "after", harness.userName(t, "shard0-primary", 90, 2))
+
+	refreshed, err := queries.Users().GetUser(t.Context(), arg)
+	require.NoError(t, err)
+	assert.Equal(t, "after", refreshed.Name)
+	assert.Zero(t, cachedUsers.cacheHits())
+
+	_, err = harness.pools["shard0-primary"].Exec(
+		t.Context(),
+		"UPDATE users SET name = 'fresh' WHERE id = 90 AND tenant_id = 2",
+	)
+	require.NoError(t, err)
+
+	cached, err := queries.Users().GetUser(t.Context(), arg)
+	require.NoError(t, err)
+	assert.Equal(t, "after", cached.Name)
+	assert.Equal(t, 1, cachedUsers.cacheHits())
+
+	fresh, err := queries.Users().GetUser(t.Context(), arg, fixture.ReadFromPrimary())
+	require.NoError(t, err)
+	assert.Equal(t, "fresh", fresh.Name)
+	assert.Equal(t, 1, cachedUsers.cacheHits())
+
+	spans := recorder.Ended()
+	require.Len(t, spans, 9)
+	storeSpans := make([]sdktrace.ReadOnlySpan, 0, 5)
+	querySpans := make([]sdktrace.ReadOnlySpan, 0, 4)
+	for _, span := range spans {
+		switch {
+		case strings.HasPrefix(span.Name(), "pgmesh.store."):
+			storeSpans = append(storeSpans, span)
+		case strings.HasPrefix(span.Name(), "pgmesh.query."):
+			querySpans = append(querySpans, span)
+		default:
+			require.Failf(t, "unexpected span", "%s", span.Name())
+		}
+	}
+	require.Len(t, storeSpans, 5)
+	require.Len(t, querySpans, 4)
+
+	internalExecutions := make([]bool, 0, len(storeSpans))
+	storeSpanIDs := make(map[string]struct{}, len(storeSpans))
+	for _, span := range storeSpans {
+		storeSpanIDs[span.SpanContext().SpanID().String()] = struct{}{}
+		attributes := make(map[string]any, len(span.Attributes()))
+		for _, item := range span.Attributes() {
+			attributes[string(item.Key)] = item.Value.AsInterface()
+		}
+		executed, ok := attributes[pgmesh.AttributeInternalStoreExecuted].(bool)
+		require.True(t, ok)
+		internalExecutions = append(internalExecutions, executed)
+		if !executed {
+			assert.NotContains(t, attributes, pgmesh.AttributeReplicaSet)
+			assert.NotContains(t, attributes, pgmesh.AttributeRouteMode)
+		}
+	}
+	assert.Equal(t, []bool{true, true, true, false, true}, internalExecutions)
+	for _, span := range querySpans {
+		attributes := make(map[string]any, len(span.Attributes()))
+		for _, item := range span.Attributes() {
+			attributes[string(item.Key)] = item.Value.AsInterface()
+		}
+		assert.NotContains(t, attributes, pgmesh.AttributeInternalStoreExecuted)
+		assert.Contains(t, storeSpanIDs, span.Parent().SpanID().String())
+	}
 }
 
 func TestPostgresTopologyIntegration(t *testing.T) {

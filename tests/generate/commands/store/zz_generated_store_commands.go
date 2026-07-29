@@ -47,11 +47,71 @@ type Commands interface {
 	CommandsWriter
 }
 
+type telemetryCommandsStore[SK any] struct {
+	store  *meshStore[SK]
+	target Commands
+}
+
+func (q *telemetryCommandsStore[SK]) BatchGetCommandUser(ctx context.Context, id []int64, storeOptions ...QueryOption) *db.BatchGetCommandUserBatchResults {
+	return q.target.BatchGetCommandUser(ctx, id, storeOptions...)
+}
+
+func (q *telemetryCommandsStore[SK]) BatchInsertCommandUsers(ctx context.Context, arg []*BatchInsertCommandUsersT, storeOptions ...QueryOption) *db.BatchInsertCommandUsersBatchResults {
+	return q.target.BatchInsertCommandUsers(ctx, arg, storeOptions...)
+}
+
+func (q *telemetryCommandsStore[SK]) BatchListCommandUsersByTenant(ctx context.Context, tenantID []int64, storeOptions ...QueryOption) *db.BatchListCommandUsersByTenantBatchResults {
+	return q.target.BatchListCommandUsersByTenant(ctx, tenantID, storeOptions...)
+}
+
+func (q *telemetryCommandsStore[SK]) CopyCommandUsers(ctx context.Context, arg []*CopyCommandUsersT, storeOptions ...QueryOption) (result int64, err error) {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Commands", "CopyCommandUsers", pgmesh.QueryKindWrite)
+	defer func() { storeSpan.End(err) }()
+	return q.target.CopyCommandUsers(ctx, arg, storeOptions...)
+}
+
+func (q *telemetryCommandsStore[SK]) DeleteCommandUser(ctx context.Context, id int64, storeOptions ...QueryOption) (err error) {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Commands", "DeleteCommandUser", pgmesh.QueryKindWrite)
+	defer func() { storeSpan.End(err) }()
+	return q.target.DeleteCommandUser(ctx, id, storeOptions...)
+}
+
+func (q *telemetryCommandsStore[SK]) DeleteCommandUsersByTenant(ctx context.Context, tenantID int64, storeOptions ...QueryOption) (result int64, err error) {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Commands", "DeleteCommandUsersByTenant", pgmesh.QueryKindWrite)
+	defer func() { storeSpan.End(err) }()
+	return q.target.DeleteCommandUsersByTenant(ctx, tenantID, storeOptions...)
+}
+
+func (q *telemetryCommandsStore[SK]) GetCommandUser(ctx context.Context, id int64, storeOptions ...QueryOption) (result *db.User, err error) {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Commands", "GetCommandUser", pgmesh.QueryKindRead)
+	defer func() { storeSpan.End(err) }()
+	return q.target.GetCommandUser(ctx, id, storeOptions...)
+}
+
+func (q *telemetryCommandsStore[SK]) ListCommandUsers(ctx context.Context, storeOptions ...QueryOption) (result []*db.User, err error) {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Commands", "ListCommandUsers", pgmesh.QueryKindRead)
+	defer func() { storeSpan.End(err) }()
+	return q.target.ListCommandUsers(ctx, storeOptions...)
+}
+
+func (q *telemetryCommandsStore[SK]) TouchCommandUser(ctx context.Context, id int64, storeOptions ...QueryOption) (result pgconn.CommandTag, err error) {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Commands", "TouchCommandUser", pgmesh.QueryKindWrite)
+	defer func() { storeSpan.End(err) }()
+	return q.target.TouchCommandUser(ctx, id, storeOptions...)
+}
+
+// WithCommandsFactory configures an optional wrapper for the Commands query group.
+// A nil factory leaves the generated query group unwrapped.
+func WithCommandsFactory(createCommands func(Commands) Commands) StoreOption {
+	return func(options *storeOptions) { options.factories.Commands = createCommands }
+}
+
 var _ Commands = (*groupedMeshStore[uint8])(nil)
+var _ Commands = (*telemetryCommandsStore[uint8])(nil)
 
 // Commands returns the Commands query group.
 func (q *meshStore[SK]) Commands() Commands {
-	return &groupedMeshStore[SK]{store: q}
+	return q.groups.Commands
 }
 
 // BatchGetCommandUser executes the generated query on its target shard.

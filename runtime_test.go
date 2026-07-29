@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 
@@ -239,12 +240,14 @@ func TestQueryTelemetryRecordsRoutingAndErrors(t *testing.T) {
 	for _, item := range recordedSpan.Attributes() {
 		attributes[item.Key] = item.Value
 	}
+	assert.Equal(t, "UserStore", attributes[pgmesh.AttributeStoreName].AsString())
 	assert.Equal(t, "CreateUser", attributes[pgmesh.AttributeQueryName].AsString())
 	assert.Equal(t, "write", attributes[pgmesh.AttributeQueryKind].AsString())
 	assert.Equal(t, "*errors.errorString", attributes[attribute.Key("error.type")].AsString())
 	assert.NotContains(t, attributes, attribute.Key("pgmesh.route.vshard"))
 	assert.Equal(t, "main", attributes[pgmesh.AttributeReplicaSet].AsString())
 	assert.Equal(t, "primary", attributes[pgmesh.AttributeRouteMode].AsString())
+	assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeInternalStoreExecuted))
 	assert.NotContains(t, attributes, attribute.Key("pgmesh.route.write_mirror_count"))
 	require.Len(t, recordedSpan.Events(), 1)
 	assert.Equal(t, "exception", recordedSpan.Events()[0].Name)
@@ -266,12 +269,14 @@ func TestQueryTelemetryRecordsRoutingAndErrors(t *testing.T) {
 	require.NoError(t, json.Unmarshal(bytes.TrimSpace(logOutput.Bytes()), &logRecord))
 	assert.Equal(t, "DEBUG", logRecord["level"])
 	assert.Equal(t, "pgmesh query completed", logRecord["msg"])
+	assert.Equal(t, "UserStore", logRecord["store_name"])
 	assert.Equal(t, "CreateUser", logRecord["query_name"])
 	assert.Equal(t, "write", logRecord["query_kind"])
 	assert.Equal(t, true, logRecord["failed"])
 	assert.Equal(t, "0", logRecord["vshard"])
 	assert.Equal(t, "main", logRecord["replica_set"])
 	assert.Equal(t, "primary", logRecord["route_mode"])
+	assert.NotContains(t, logRecord, "internal_store_executed")
 	assert.NotContains(t, logRecord, "write_mirror_count")
 	assert.Equal(t, queryErr.Error(), logRecord["error"])
 	assert.Contains(t, logRecord, "duration")
@@ -305,7 +310,9 @@ func TestQueryTelemetryRecordsSuccessfulQueries(t *testing.T) {
 	assert.Empty(t, spans[0].Events())
 	spanAttributes := attributeMap(spans[0].Attributes())
 	assert.NotContains(t, spanAttributes, attribute.Key("error.type"))
+	assert.Equal(t, "UserStore", spanAttributes[pgmesh.AttributeStoreName].AsString())
 	assert.Equal(t, "read", spanAttributes[pgmesh.AttributeRouteMode].AsString())
+	assert.NotContains(t, spanAttributes, attribute.Key(pgmesh.AttributeInternalStoreExecuted))
 
 	var metrics metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(t.Context(), &metrics))
@@ -316,7 +323,186 @@ func TestQueryTelemetryRecordsSuccessfulQueries(t *testing.T) {
 	require.Len(t, data.DataPoints, 1)
 	metricAttributes := attributeMap(data.DataPoints[0].Attributes.ToSlice())
 	assert.NotContains(t, metricAttributes, attribute.Key("error.type"))
+	assert.Equal(t, "UserStore", metricAttributes[pgmesh.AttributeStoreName].AsString())
 	assert.Equal(t, "read", metricAttributes[pgmesh.AttributeRouteMode].AsString())
+	assert.NotContains(t, metricAttributes, attribute.Key(pgmesh.AttributeInternalStoreExecuted))
+}
+
+func TestStoreTelemetryRecordsFactoryShortCircuit(t *testing.T) {
+	t.Parallel()
+
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	t.Cleanup(func() { require.NoError(t, tracerProvider.Shutdown(context.Background())) })
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { require.NoError(t, meterProvider.Shutdown(context.Background())) })
+	var logOutput bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logOutput, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	mesh, err := pgmesh.NewBuilder[string, *fakeWriter, uint64](1).
+		WithTracerProvider(tracerProvider).
+		WithMeterProvider(meterProvider).
+		WithLogger(logger).
+		WithHasher(pgmesh.ConstantShardHashFor[uint64](0)).
+		Link(0, pgmesh.NewReplicaSet("main", node("main"), nil)).
+		Build()
+	require.NoError(t, err)
+
+	_, storeSpan := mesh.StartStoreSpan(t.Context(), "Users", "GetUser", pgmesh.QueryKindRead)
+	storeSpan.End(nil)
+
+	spans := recorder.Ended()
+	require.Len(t, spans, 1)
+	assert.Equal(t, "pgmesh.store.Users.GetUser", spans[0].Name())
+	attributes := attributeMap(spans[0].Attributes())
+	assert.Equal(t, "Users", attributes[pgmesh.AttributeStoreName].AsString())
+	assert.Equal(t, "GetUser", attributes[pgmesh.AttributeQueryName].AsString())
+	assert.False(t, attributes[pgmesh.AttributeInternalStoreExecuted].AsBool())
+	assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeReplicaSet))
+	assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeRouteMode))
+
+	var metrics metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(t.Context(), &metrics))
+	histogram := metricHistogram(t, metrics, pgmesh.MetricStoreDuration)
+	require.Len(t, histogram.DataPoints, 1)
+	metricAttributes := attributeMap(histogram.DataPoints[0].Attributes.ToSlice())
+	assert.False(t, metricAttributes[pgmesh.AttributeInternalStoreExecuted].AsBool())
+	assert.Equal(t, "Users", metricAttributes[pgmesh.AttributeStoreName].AsString())
+
+	var logRecord map[string]any
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(logOutput.Bytes()), &logRecord))
+	assert.Equal(t, "pgmesh store completed", logRecord["msg"])
+	assert.Equal(t, "Users", logRecord["store_name"])
+	assert.Equal(t, "GetUser", logRecord["query_name"])
+	assert.Equal(t, false, logRecord["internal_store_executed"])
+	assert.NotContains(t, logRecord, "replica_set")
+	assert.NotContains(t, logRecord, "route_mode")
+}
+
+func TestStoreTelemetryCreatesDedicatedInternalQueryChild(t *testing.T) {
+	t.Parallel()
+
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	t.Cleanup(func() { require.NoError(t, tracerProvider.Shutdown(context.Background())) })
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { require.NoError(t, meterProvider.Shutdown(context.Background())) })
+	var logOutput bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logOutput, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	mesh, err := pgmesh.NewBuilder[string, *fakeWriter, uint64](1).
+		WithTracerProvider(tracerProvider).
+		WithMeterProvider(meterProvider).
+		WithLogger(logger).
+		WithHasher(pgmesh.ConstantShardHashFor[uint64](0)).
+		Link(0, pgmesh.NewReplicaSet("main", node("main"), nil)).
+		Build()
+	require.NoError(t, err)
+
+	ctx, storeSpan := mesh.StartStoreSpan(t.Context(), "Users", "GetUser", pgmesh.QueryKindRead)
+	_, querySpan := mesh.StartSpan(ctx, "Users", "GetUser", pgmesh.QueryKindRead)
+	querySpan.SetRoute(0, "main", pgmesh.RouteModeRead)
+	querySpan.End(nil)
+	storeSpan.End(nil)
+
+	spans := recorder.Ended()
+	require.Len(t, spans, 2)
+	query := spans[0]
+	store := spans[1]
+	assert.Equal(t, "pgmesh.query.Users.GetUser", query.Name())
+	assert.Equal(t, "pgmesh.store.Users.GetUser", store.Name())
+	assert.Equal(t, store.SpanContext().SpanID(), query.Parent().SpanID())
+	queryAttributes := attributeMap(query.Attributes())
+	assert.Equal(t, "main", queryAttributes[pgmesh.AttributeReplicaSet].AsString())
+	assert.NotContains(t, queryAttributes, attribute.Key(pgmesh.AttributeInternalStoreExecuted))
+	storeAttributes := attributeMap(store.Attributes())
+	assert.True(t, storeAttributes[pgmesh.AttributeInternalStoreExecuted].AsBool())
+	assert.NotContains(t, storeAttributes, attribute.Key(pgmesh.AttributeReplicaSet))
+	assert.NotContains(t, storeAttributes, attribute.Key(pgmesh.AttributeRouteMode))
+
+	var metrics metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(t.Context(), &metrics))
+	storeHistogram := metricHistogram(t, metrics, pgmesh.MetricStoreDuration)
+	require.Len(t, storeHistogram.DataPoints, 1)
+	storeMetricAttributes := attributeMap(storeHistogram.DataPoints[0].Attributes.ToSlice())
+	assert.True(t, storeMetricAttributes[pgmesh.AttributeInternalStoreExecuted].AsBool())
+	queryHistogram := metricHistogram(t, metrics, pgmesh.MetricQueryDuration)
+	require.Len(t, queryHistogram.DataPoints, 1)
+	queryMetricAttributes := attributeMap(queryHistogram.DataPoints[0].Attributes.ToSlice())
+	assert.Equal(t, "main", queryMetricAttributes[pgmesh.AttributeReplicaSet].AsString())
+	assert.NotContains(t, queryMetricAttributes, attribute.Key(pgmesh.AttributeInternalStoreExecuted))
+
+	logLines := strings.Split(strings.TrimSpace(logOutput.String()), "\n")
+	require.Len(t, logLines, 2)
+	var queryLog map[string]any
+	require.NoError(t, json.Unmarshal([]byte(logLines[0]), &queryLog))
+	assert.Equal(t, "pgmesh query completed", queryLog["msg"])
+	assert.Equal(t, "main", queryLog["replica_set"])
+	assert.NotContains(t, queryLog, "internal_store_executed")
+	var storeLog map[string]any
+	require.NoError(t, json.Unmarshal([]byte(logLines[1]), &storeLog))
+	assert.Equal(t, "pgmesh store completed", storeLog["msg"])
+	assert.Equal(t, true, storeLog["internal_store_executed"])
+	assert.NotContains(t, storeLog, "replica_set")
+}
+
+func TestStoreTelemetryRecordsWrapperErrorsWithoutInternalExecution(t *testing.T) {
+	t.Parallel()
+
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	t.Cleanup(func() { require.NoError(t, tracerProvider.Shutdown(context.Background())) })
+
+	mesh, err := pgmesh.NewBuilder[string, *fakeWriter, uint64](1).
+		WithTracerProvider(tracerProvider).
+		WithHasher(pgmesh.ConstantShardHashFor[uint64](0)).
+		Link(0, pgmesh.NewReplicaSet("main", node("main"), nil)).
+		Build()
+	require.NoError(t, err)
+
+	_, storeSpan := mesh.StartStoreSpan(t.Context(), "Users", "GetUser", pgmesh.QueryKindRead)
+	wrapperErr := errors.New("cache unavailable")
+	storeSpan.End(wrapperErr)
+
+	spans := recorder.Ended()
+	require.Len(t, spans, 1)
+	assert.Equal(t, codes.Error, spans[0].Status().Code)
+	attributes := attributeMap(spans[0].Attributes())
+	assert.False(t, attributes[pgmesh.AttributeInternalStoreExecuted].AsBool())
+	assert.Equal(t, "*errors.errorString", attributes[attribute.Key("error.type")].AsString())
+}
+
+func TestStoreTelemetryExecutionMarkerIsMeshScoped(t *testing.T) {
+	t.Parallel()
+
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	t.Cleanup(func() { require.NoError(t, tracerProvider.Shutdown(context.Background())) })
+
+	mesh, err := pgmesh.NewBuilder[string, *fakeWriter, uint64](1).
+		WithTracerProvider(tracerProvider).
+		WithHasher(pgmesh.ConstantShardHashFor[uint64](0)).
+		Link(0, pgmesh.NewReplicaSet("main", node("main"), nil)).
+		Build()
+	require.NoError(t, err)
+	otherMesh, err := pgmesh.NewBuilder[string, *fakeWriter, uint64](1).
+		WithTracerProvider(tracerProvider).
+		WithHasher(pgmesh.ConstantShardHashFor[uint64](0)).
+		Link(0, pgmesh.NewReplicaSet("other", node("other"), nil)).
+		Build()
+	require.NoError(t, err)
+
+	ctx, storeSpan := mesh.StartStoreSpan(t.Context(), "Users", "GetUser", pgmesh.QueryKindRead)
+	_, querySpan := otherMesh.StartSpan(ctx, "Users", "GetUser", pgmesh.QueryKindRead)
+	querySpan.End(nil)
+	storeSpan.End(nil)
+
+	spans := recorder.Ended()
+	require.Len(t, spans, 2)
+	storeAttributes := attributeMap(spans[1].Attributes())
+	assert.False(t, storeAttributes[pgmesh.AttributeInternalStoreExecuted].AsBool())
 }
 
 func TestQueryTelemetryRecordsMultiRoute(t *testing.T) {
@@ -382,6 +568,27 @@ func attributeMap(items []attribute.KeyValue) map[attribute.Key]attribute.Value 
 	return attributes
 }
 
+func metricHistogram(
+	t *testing.T,
+	metrics metricdata.ResourceMetrics,
+	name string,
+) metricdata.Histogram[float64] {
+	t.Helper()
+
+	for _, scope := range metrics.ScopeMetrics {
+		for _, measurement := range scope.Metrics {
+			if measurement.Name != name {
+				continue
+			}
+			histogram, ok := measurement.Data.(metricdata.Histogram[float64])
+			require.True(t, ok)
+			return histogram
+		}
+	}
+	require.FailNow(t, "metric not found", name)
+	return metricdata.Histogram[float64]{}
+}
+
 func assertMetricAttributes(t *testing.T, items []attribute.KeyValue) {
 	t.Helper()
 
@@ -389,12 +596,14 @@ func assertMetricAttributes(t *testing.T, items []attribute.KeyValue) {
 	for _, item := range items {
 		attributes[item.Key] = item.Value
 	}
+	assert.Equal(t, "UserStore", attributes[pgmesh.AttributeStoreName].AsString())
 	assert.Equal(t, "CreateUser", attributes[pgmesh.AttributeQueryName].AsString())
 	assert.Equal(t, "write", attributes[pgmesh.AttributeQueryKind].AsString())
 	assert.Equal(t, "*errors.errorString", attributes[attribute.Key("error.type")].AsString())
 	assert.NotContains(t, attributes, attribute.Key("pgmesh.route.vshard"))
 	assert.Equal(t, "main", attributes[pgmesh.AttributeReplicaSet].AsString())
 	assert.Equal(t, "primary", attributes[pgmesh.AttributeRouteMode].AsString())
+	assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeInternalStoreExecuted))
 	assert.NotContains(t, attributes, attribute.Key("pgmesh.route.write_mirror_count"))
 }
 

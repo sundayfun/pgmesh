@@ -80,9 +80,12 @@ type storeOptions struct {
 	tracerProvider trace.TracerProvider
 	meterProvider  metric.MeterProvider
 	logger         *slog.Logger
+	factories      struct {
+		Settings func(Settings) Settings
+	}
 }
 
-// StoreOption customizes telemetry for a generated store.
+// StoreOption customizes a generated store.
 type StoreOption func(*storeOptions)
 
 // WithTracerProvider configures the provider used for routed query spans.
@@ -177,13 +180,24 @@ func NewStore(ctx context.Context, topology Topology, options ...StoreOption) (S
 }
 
 type meshStore[SK any] struct {
-	mesh *pgmesh.Mesh[*readQueries, *queryStore, SK]
+	mesh   *pgmesh.Mesh[*readQueries, *queryStore, SK]
+	groups struct {
+		Settings Settings
+	}
 }
 
 var _ Store = (*meshStore[uint8])(nil)
 
 type groupedMeshStore[SK any] struct {
 	store *meshStore[SK]
+}
+
+func (q *meshStore[SK]) initializeGroups(options storeOptions) {
+	internalSettings := &groupedMeshStore[SK]{store: q}
+	q.groups.Settings = internalSettings
+	if createSettings := options.factories.Settings; createSettings != nil {
+		q.groups.Settings = &telemetrySettingsStore[SK]{store: q, target: createSettings(internalSettings)}
+	}
 }
 
 func (c singletonTopology) buildStore(_ context.Context, options storeOptions) (Store, error) {
@@ -228,5 +242,7 @@ func (c singletonTopology) buildStore(_ context.Context, options storeOptions) (
 	if err != nil {
 		return nil, err
 	}
-	return &meshStore[uint8]{mesh: mesh}, nil
+	store := &meshStore[uint8]{mesh: mesh}
+	store.initializeGroups(options)
+	return store, nil
 }

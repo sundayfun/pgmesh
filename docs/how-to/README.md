@@ -15,6 +15,10 @@ working package. If not, begin with the [quickstart](../quickstart.md).
 - [Expand shards with synchronous dual writes](add-write-mirrors.md)
 - [Use transactions](use-transactions.md)
 
+## Add application behavior
+
+- [Add cache-aside behavior](add-cache-aside.md)
+
 ## Observe routed queries
 
 - [Enable OpenTelemetry tracing and metrics](enable-opentelemetry.md)
