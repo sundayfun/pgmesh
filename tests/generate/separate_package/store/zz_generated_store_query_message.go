@@ -11,19 +11,17 @@ import (
 
 // ListP2PMessageIDsByChatT combines SQL and routing parameters for ListP2PMessageIDsByChat.
 type ListP2PMessageIDsByChatT struct {
-	Limit           int32
-	UserID          int64
-	PeerID          int64
-	CreatedSince    pgtype.Timestamptz
-	LastID          interface{}
-	ToUserOrGroupID int64
-	InGroup         bool
+	MessageKey
+	Limit        int32
+	PeerID       int64
+	CreatedSince pgtype.Timestamptz
+	LastID       interface{}
 }
 
 func (arg *ListP2PMessageIDsByChatT) sqlcParams() *db.ListP2PMessageIDsByChatParams {
 	return &db.ListP2PMessageIDsByChatParams{
 		Limit:        arg.Limit,
-		UserID:       arg.UserID,
+		UserID:       arg.MessageKey.UserID,
 		PeerID:       arg.PeerID,
 		CreatedSince: arg.CreatedSince,
 		LastID:       arg.LastID,
@@ -32,19 +30,17 @@ func (arg *ListP2PMessageIDsByChatT) sqlcParams() *db.ListP2PMessageIDsByChatPar
 
 // ListP2PMessagesByChatT combines SQL and routing parameters for ListP2PMessagesByChat.
 type ListP2PMessagesByChatT struct {
-	Limit           int32
-	UserID          int64
-	PeerID          int64
-	CreatedSince    pgtype.Timestamptz
-	LastID          interface{}
-	ToUserOrGroupID int64
-	InGroup         bool
+	MessageKey
+	Limit        int32
+	PeerID       int64
+	CreatedSince pgtype.Timestamptz
+	LastID       interface{}
 }
 
 func (arg *ListP2PMessagesByChatT) sqlcParams() *db.ListP2PMessagesByChatParams {
 	return &db.ListP2PMessagesByChatParams{
 		Limit:        arg.Limit,
-		UserID:       arg.UserID,
+		UserID:       arg.MessageKey.UserID,
 		PeerID:       arg.PeerID,
 		CreatedSince: arg.CreatedSince,
 		LastID:       arg.LastID,
@@ -109,7 +105,7 @@ func (q *groupedMeshStore[SK]) ListP2PMessageIDsByChat(ctx context.Context, arg 
 	// Resolve the shard key for this topology.
 	var shardKey SK
 	if q.store.resolver != nil {
-		shardKey = q.store.resolver.MessageKey(arg.UserID, arg.ToUserOrGroupID, arg.InGroup)
+		shardKey = q.store.resolver.MessageKey(arg.MessageKey)
 	}
 	shard, err := q.store.mesh.Shard(shardKey)
 	if err != nil {
@@ -146,7 +142,7 @@ func (q *groupedMeshStore[SK]) ListP2PMessagesByChat(ctx context.Context, arg *L
 	// Resolve the shard key for this topology.
 	var shardKey SK
 	if q.store.resolver != nil {
-		shardKey = q.store.resolver.MessageKey(arg.UserID, arg.ToUserOrGroupID, arg.InGroup)
+		shardKey = q.store.resolver.MessageKey(arg.MessageKey)
 	}
 	shard, err := q.store.mesh.Shard(shardKey)
 	if err != nil {

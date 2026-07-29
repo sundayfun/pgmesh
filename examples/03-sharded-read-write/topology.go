@@ -20,11 +20,11 @@ type (
 
 type tenantResolver struct{}
 
-func (tenantResolver) Tenant(tenantID int64) uint64 {
-	if tenantID < 0 {
+func (tenantResolver) TenantKey(key sharded.TenantKey) uint64 {
+	if key.TenantID < 0 {
 		panic("tenant ID must not be negative")
 	}
-	return uint64(tenantID)
+	return uint64(key.TenantID)
 }
 
 func newAccountQueries(

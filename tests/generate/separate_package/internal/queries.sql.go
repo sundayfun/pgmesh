@@ -30,7 +30,7 @@ type CreateUserParams struct {
 }
 
 // kind: write
-// shard: tenant(tenant_id)
+// shard: tenantKey(tenant_id)
 // store: Users
 func (q *Queries) CreateUser(ctx context.Context, arg *CreateUserParams) (*User, error) {
 	row := q.db.QueryRow(ctx, createUser, arg.ID, arg.TenantID, arg.Name)
@@ -79,7 +79,7 @@ type GetAnalysisParams struct {
 }
 
 // kind: read
-// shard: tenant(tenant_id)
+// shard: tenantKey(tenant_id)
 // store: Analyses
 func (q *Queries) GetAnalysis(ctx context.Context, arg *GetAnalysisParams) (*Analysis, error) {
 	row := q.db.QueryRow(ctx, getAnalysis, arg.TenantID, arg.ID)
@@ -114,7 +114,7 @@ type GetTenantUserAnalysisRow struct {
 }
 
 // kind: read
-// shard: tenant(tenant_id)
+// shard: tenantKey(tenant_id)
 // store: Analyses
 func (q *Queries) GetTenantUserAnalysis(ctx context.Context, arg *GetTenantUserAnalysisParams) (*GetTenantUserAnalysisRow, error) {
 	row := q.db.QueryRow(ctx, getTenantUserAnalysis, arg.UserID, arg.AnalysisID)
@@ -135,7 +135,7 @@ type GetUserParams struct {
 }
 
 // kind: read
-// shard: tenant(tenant_id)
+// shard: tenantKey(tenant_id)
 // store: Users
 func (q *Queries) GetUser(ctx context.Context, arg *GetUserParams) (*User, error) {
 	row := q.db.QueryRow(ctx, getUser, arg.TenantID, arg.ID)
@@ -285,7 +285,7 @@ WHERE id = ANY($1::bigint[])
 `
 
 // kind: read
-// shard: tenant(tenant_id)
+// shard: tenantKey(tenant_id)
 // store: Users
 func (q *Queries) ListUsersByIDs(ctx context.Context, ids []int64) ([]*User, error) {
 	rows, err := q.db.Query(ctx, listUsersByIDs, ids)
@@ -321,7 +321,7 @@ type UpdateUserNameParams struct {
 }
 
 // kind: write
-// shard: tenant(tenant_id)
+// shard: tenantKey(tenant_id)
 // store: Users
 func (q *Queries) UpdateUserName(ctx context.Context, arg *UpdateUserNameParams) (*User, error) {
 	row := q.db.QueryRow(ctx, updateUserName, arg.TenantID, arg.ID, arg.Name)

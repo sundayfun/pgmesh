@@ -7,14 +7,48 @@ import (
 	pgmesh "github.com/sundayfun/pgmesh"
 )
 
-// GetAccountT is the store parameter type for GetAccount.
-type GetAccountT = GetAccountParams
+// GetAccountT combines SQL and routing parameters for GetAccount.
+type GetAccountT struct {
+	TenantKey
+	ID int64
+}
 
-// UpdateAccountNameT is the store parameter type for UpdateAccountName.
-type UpdateAccountNameT = UpdateAccountNameParams
+func (arg *GetAccountT) sqlcParams() *GetAccountParams {
+	return &GetAccountParams{
+		TenantID: arg.TenantKey.TenantID,
+		ID:       arg.ID,
+	}
+}
 
-// UpsertAccountT is the store parameter type for UpsertAccount.
-type UpsertAccountT = UpsertAccountParams
+// UpdateAccountNameT combines SQL and routing parameters for UpdateAccountName.
+type UpdateAccountNameT struct {
+	TenantKey
+	ID          int64
+	DisplayName string
+}
+
+func (arg *UpdateAccountNameT) sqlcParams() *UpdateAccountNameParams {
+	return &UpdateAccountNameParams{
+		TenantID:    arg.TenantKey.TenantID,
+		ID:          arg.ID,
+		DisplayName: arg.DisplayName,
+	}
+}
+
+// UpsertAccountT combines SQL and routing parameters for UpsertAccount.
+type UpsertAccountT struct {
+	TenantKey
+	ID          int64
+	DisplayName string
+}
+
+func (arg *UpsertAccountT) sqlcParams() *UpsertAccountParams {
+	return &UpsertAccountParams{
+		ID:          arg.ID,
+		TenantID:    arg.TenantKey.TenantID,
+		DisplayName: arg.DisplayName,
+	}
+}
 
 // AccountsReader exposes read queries in the Accounts store group.
 type AccountsReader interface {
@@ -82,7 +116,7 @@ func (q *groupedMeshStore[SK]) GetAccount(ctx context.Context, arg *GetAccountT,
 	// Resolve the shard key for this topology.
 	var shardKey SK
 	if q.store.resolver != nil {
-		shardKey = q.store.resolver.Tenant(arg.TenantID)
+		shardKey = q.store.resolver.TenantKey(arg.TenantKey)
 	}
 	shard, err := q.store.mesh.Shard(shardKey)
 	if err != nil {
@@ -96,17 +130,17 @@ func (q *groupedMeshStore[SK]) GetAccount(ctx context.Context, arg *GetAccountT,
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
 		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeTransaction)
-		return shard.Write().WithTx(options.tx).GetAccount(ctx, arg)
+		return shard.Write().WithTx(options.tx).GetAccount(ctx, arg.sqlcParams())
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
 		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModePrimary)
-		return shard.Write().GetAccount(ctx, arg)
+		return shard.Write().GetAccount(ctx, arg.sqlcParams())
 
 	// Ordinary reads use the shard's replica route.
 	default:
 		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeRead)
-		return shard.Read().GetAccount(ctx, arg)
+		return shard.Read().GetAccount(ctx, arg.sqlcParams())
 	}
 }
 
@@ -119,7 +153,7 @@ func (q *groupedMeshStore[SK]) UpdateAccountName(ctx context.Context, arg *Updat
 	// Resolve the shard key for this topology.
 	var shardKey SK
 	if q.store.resolver != nil {
-		shardKey = q.store.resolver.Tenant(arg.TenantID)
+		shardKey = q.store.resolver.TenantKey(arg.TenantKey)
 	}
 	shard, err := q.store.mesh.Shard(shardKey)
 	if err != nil {
@@ -139,7 +173,7 @@ func (q *groupedMeshStore[SK]) UpdateAccountName(ctx context.Context, arg *Updat
 
 	// Execute the write after recording its resolved route.
 	querySpan.SetRoute(shard.VShardIndex(), shard.Name(), mode)
-	return target.UpdateAccountName(ctx, arg)
+	return target.UpdateAccountName(ctx, arg.sqlcParams())
 }
 
 // UpsertAccount executes the generated query on its target shard.
@@ -151,7 +185,7 @@ func (q *groupedMeshStore[SK]) UpsertAccount(ctx context.Context, arg *UpsertAcc
 	// Resolve the shard key for this topology.
 	var shardKey SK
 	if q.store.resolver != nil {
-		shardKey = q.store.resolver.Tenant(arg.TenantID)
+		shardKey = q.store.resolver.TenantKey(arg.TenantKey)
 	}
 	shard, err := q.store.mesh.Shard(shardKey)
 	if err != nil {
@@ -171,5 +205,5 @@ func (q *groupedMeshStore[SK]) UpsertAccount(ctx context.Context, arg *UpsertAcc
 
 	// Execute the write after recording its resolved route.
 	querySpan.SetRoute(shard.VShardIndex(), shard.Name(), mode)
-	return target.UpsertAccount(ctx, arg)
+	return target.UpsertAccount(ctx, arg.sqlcParams())
 }

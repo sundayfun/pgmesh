@@ -16,7 +16,7 @@ WHERE tenant_id = $1
 `
 
 // kind: read
-// shard: tenant(tenant_id)
+// shard: tenantKey(tenant_id)
 // store: Reports
 func (q *Queries) CountAccounts(ctx context.Context, tenantID int64) (int64, error) {
 	row := q.db.QueryRow(ctx, countAccounts, tenantID)
@@ -37,7 +37,7 @@ type GetAccountParams struct {
 }
 
 // kind: read
-// shard: tenant(tenant_id)
+// shard: tenantKey(tenant_id)
 // store: Accounts
 func (q *Queries) GetAccount(ctx context.Context, arg *GetAccountParams) (*Account, error) {
 	row := q.db.QueryRow(ctx, getAccount, arg.TenantID, arg.ID)
@@ -60,7 +60,7 @@ type UpdateAccountNameParams struct {
 }
 
 // kind: write
-// shard: tenant(tenant_id)
+// shard: tenantKey(tenant_id)
 // store: Accounts
 func (q *Queries) UpdateAccountName(ctx context.Context, arg *UpdateAccountNameParams) (*Account, error) {
 	row := q.db.QueryRow(ctx, updateAccountName, arg.TenantID, arg.ID, arg.DisplayName)
@@ -85,7 +85,7 @@ type UpsertAccountParams struct {
 }
 
 // kind: write
-// shard: tenant(tenant_id)
+// shard: tenantKey(tenant_id)
 // store: Accounts
 func (q *Queries) UpsertAccount(ctx context.Context, arg *UpsertAccountParams) (*Account, error) {
 	row := q.db.QueryRow(ctx, upsertAccount, arg.ID, arg.TenantID, arg.DisplayName)

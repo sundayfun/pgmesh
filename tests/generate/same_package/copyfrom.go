@@ -40,7 +40,7 @@ func (r iteratorForCopyUsers) Err() error {
 }
 
 // kind: write
-// shard: tenant(tenant_id)
+// shard: tenantKey(tenant_id)
 // store: Users
 func (q *Queries) CopyUsers(ctx context.Context, arg []*CopyUsersParams) (int64, error) {
 	return q.db.CopyFrom(ctx, []string{"users"}, []string{"id", "tenant_id", "name"}, &iteratorForCopyUsers{rows: arg})

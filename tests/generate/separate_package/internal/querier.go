@@ -10,11 +10,11 @@ import (
 
 type Querier interface {
 	// kind: write
-	// shard: tenant(tenant_id)
+	// shard: tenantKey(tenant_id)
 	// store: Users
 	CopyUsers(ctx context.Context, arg []*CopyUsersParams) (int64, error)
 	// kind: write
-	// shard: tenant(tenant_id)
+	// shard: tenantKey(tenant_id)
 	// store: Users
 	CreateUser(ctx context.Context, arg *CreateUserParams) (*User, error)
 	// kind: write
@@ -26,15 +26,15 @@ type Querier interface {
 	// store: Users
 	DeleteAllUsersByName(ctx context.Context, name string) (int64, error)
 	// kind: read
-	// shard: tenant(tenant_id)
+	// shard: tenantKey(tenant_id)
 	// store: Analyses
 	GetAnalysis(ctx context.Context, arg *GetAnalysisParams) (*Analysis, error)
 	// kind: read
-	// shard: tenant(tenant_id)
+	// shard: tenantKey(tenant_id)
 	// store: Analyses
 	GetTenantUserAnalysis(ctx context.Context, arg *GetTenantUserAnalysisParams) (*GetTenantUserAnalysisRow, error)
 	// kind: read
-	// shard: tenant(tenant_id)
+	// shard: tenantKey(tenant_id)
 	// store: Users
 	GetUser(ctx context.Context, arg *GetUserParams) (*User, error)
 	// kind: read
@@ -50,11 +50,11 @@ type Querier interface {
 	// store: QueryMessage
 	ListP2PMessagesByChat(ctx context.Context, arg *ListP2PMessagesByChatParams) ([]*Message, error)
 	// kind: read
-	// shard: tenant(tenant_id)
+	// shard: tenantKey(tenant_id)
 	// store: Users
 	ListUsersByIDs(ctx context.Context, ids []int64) ([]*User, error)
 	// kind: write
-	// shard: tenant(tenant_id)
+	// shard: tenantKey(tenant_id)
 	// store: Users
 	UpdateUserName(ctx context.Context, arg *UpdateUserNameParams) (*User, error)
 }

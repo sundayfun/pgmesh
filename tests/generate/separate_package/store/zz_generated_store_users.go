@@ -12,22 +12,68 @@ import (
 	"sync"
 )
 
-// CopyUsersT is the store parameter type for CopyUsers.
-type CopyUsersT = CopyUsersParams
+// CopyUsersT combines SQL and routing parameters for CopyUsers.
+type CopyUsersT struct {
+	TenantKey
+	ID   int64
+	Name string
+}
 
-// CreateUserT is the store parameter type for CreateUser.
-type CreateUserT = CreateUserParams
+func (arg *CopyUsersT) sqlcParams() *db.CopyUsersParams {
+	return &db.CopyUsersParams{
+		ID:       arg.ID,
+		TenantID: arg.TenantKey.TenantID,
+		Name:     arg.Name,
+	}
+}
 
-// GetUserT is the store parameter type for GetUser.
-type GetUserT = GetUserParams
+// CreateUserT combines SQL and routing parameters for CreateUser.
+type CreateUserT struct {
+	TenantKey
+	ID   int64
+	Name string
+}
 
-// UpdateUserNameT is the store parameter type for UpdateUserName.
-type UpdateUserNameT = UpdateUserNameParams
+func (arg *CreateUserT) sqlcParams() *db.CreateUserParams {
+	return &db.CreateUserParams{
+		ID:       arg.ID,
+		TenantID: arg.TenantKey.TenantID,
+		Name:     arg.Name,
+	}
+}
+
+// GetUserT combines SQL and routing parameters for GetUser.
+type GetUserT struct {
+	TenantKey
+	ID int64
+}
+
+func (arg *GetUserT) sqlcParams() *db.GetUserParams {
+	return &db.GetUserParams{
+		TenantID: arg.TenantKey.TenantID,
+		ID:       arg.ID,
+	}
+}
 
 // ListUsersByIDsT combines SQL and routing parameters for ListUsersByIDs.
 type ListUsersByIDsT struct {
-	ID       int64
-	TenantID int64
+	TenantKey
+	ID int64
+}
+
+// UpdateUserNameT combines SQL and routing parameters for UpdateUserName.
+type UpdateUserNameT struct {
+	TenantKey
+	ID   int64
+	Name string
+}
+
+func (arg *UpdateUserNameT) sqlcParams() *db.UpdateUserNameParams {
+	return &db.UpdateUserNameParams{
+		TenantID: arg.TenantKey.TenantID,
+		ID:       arg.ID,
+		Name:     arg.Name,
+	}
 }
 
 // UsersReader exposes read queries in the Users store group.
@@ -141,7 +187,7 @@ func (q *groupedMeshStore[SK]) CopyUsers(ctx context.Context, arg []*CopyUsersT,
 	for inputIndex, item := range arg {
 		var shardKey SK
 		if q.store.resolver != nil {
-			shardKey = q.store.resolver.Tenant(item.TenantID)
+			shardKey = q.store.resolver.TenantKey(item.TenantKey)
 		}
 		shard, routeErr := q.store.mesh.Shard(shardKey)
 		if routeErr != nil {
@@ -153,7 +199,7 @@ func (q *groupedMeshStore[SK]) CopyUsers(ctx context.Context, arg []*CopyUsersT,
 			shardGroup = &copyShardGroup{shard: shard, args: make([]*db.CopyUsersParams, 0)}
 			groupsByName[shard.Name()] = shardGroup
 		}
-		shardGroup.args = append(shardGroup.args, item)
+		shardGroup.args = append(shardGroup.args, item.sqlcParams())
 	}
 
 	groups := make([]*copyShardGroup, 0, len(groupsByName))
@@ -219,7 +265,7 @@ func (q *groupedMeshStore[SK]) CreateUser(ctx context.Context, arg *CreateUserT,
 	// Resolve the shard key for this topology.
 	var shardKey SK
 	if q.store.resolver != nil {
-		shardKey = q.store.resolver.Tenant(arg.TenantID)
+		shardKey = q.store.resolver.TenantKey(arg.TenantKey)
 	}
 	shard, err := q.store.mesh.Shard(shardKey)
 	if err != nil {
@@ -239,7 +285,7 @@ func (q *groupedMeshStore[SK]) CreateUser(ctx context.Context, arg *CreateUserT,
 
 	// Execute the write after recording its resolved route.
 	querySpan.SetRoute(shard.VShardIndex(), shard.Name(), mode)
-	return target.CreateUser(ctx, arg)
+	return target.CreateUser(ctx, arg.sqlcParams())
 }
 
 // DeleteAllUsers executes the generated query on every physical shard.
@@ -337,7 +383,7 @@ func (q *groupedMeshStore[SK]) GetUser(ctx context.Context, arg *GetUserT, store
 	// Resolve the shard key for this topology.
 	var shardKey SK
 	if q.store.resolver != nil {
-		shardKey = q.store.resolver.Tenant(arg.TenantID)
+		shardKey = q.store.resolver.TenantKey(arg.TenantKey)
 	}
 	shard, err := q.store.mesh.Shard(shardKey)
 	if err != nil {
@@ -351,17 +397,17 @@ func (q *groupedMeshStore[SK]) GetUser(ctx context.Context, arg *GetUserT, store
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
 		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeTransaction)
-		return shard.Write().WithTx(options.tx).GetUser(ctx, arg)
+		return shard.Write().WithTx(options.tx).GetUser(ctx, arg.sqlcParams())
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
 		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModePrimary)
-		return shard.Write().GetUser(ctx, arg)
+		return shard.Write().GetUser(ctx, arg.sqlcParams())
 
 	// Ordinary reads use the shard's replica route.
 	default:
 		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeRead)
-		return shard.Read().GetUser(ctx, arg)
+		return shard.Read().GetUser(ctx, arg.sqlcParams())
 	}
 }
 
@@ -447,7 +493,7 @@ func (q *groupedMeshStore[SK]) ListUsersByIDs(ctx context.Context, arg []*ListUs
 		}
 		var shardKey SK
 		if q.store.resolver != nil {
-			shardKey = q.store.resolver.Tenant(item.TenantID)
+			shardKey = q.store.resolver.TenantKey(item.TenantKey)
 		}
 		shard, routeErr := q.store.mesh.Shard(shardKey)
 		if routeErr != nil {
@@ -563,7 +609,7 @@ func (q *groupedMeshStore[SK]) UpdateUserName(ctx context.Context, arg *UpdateUs
 	// Resolve the shard key for this topology.
 	var shardKey SK
 	if q.store.resolver != nil {
-		shardKey = q.store.resolver.Tenant(arg.TenantID)
+		shardKey = q.store.resolver.TenantKey(arg.TenantKey)
 	}
 	shard, err := q.store.mesh.Shard(shardKey)
 	if err != nil {
@@ -583,5 +629,5 @@ func (q *groupedMeshStore[SK]) UpdateUserName(ctx context.Context, arg *UpdateUs
 
 	// Execute the write after recording its resolved route.
 	querySpan.SetRoute(shard.VShardIndex(), shard.Name(), mode)
-	return target.UpdateUserName(ctx, arg)
+	return target.UpdateUserName(ctx, arg.sqlcParams())
 }

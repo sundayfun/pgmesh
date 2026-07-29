@@ -8,14 +8,24 @@ import (
 	db "github.com/sundayfun/pgmesh/tests/generate/separate_package/internal"
 )
 
-// GetAnalysisT is the store parameter type for GetAnalysis.
-type GetAnalysisT = GetAnalysisParams
+// GetAnalysisT combines SQL and routing parameters for GetAnalysis.
+type GetAnalysisT struct {
+	TenantKey
+	ID int64
+}
+
+func (arg *GetAnalysisT) sqlcParams() *db.GetAnalysisParams {
+	return &db.GetAnalysisParams{
+		TenantID: arg.TenantKey.TenantID,
+		ID:       arg.ID,
+	}
+}
 
 // GetTenantUserAnalysisT combines SQL and routing parameters for GetTenantUserAnalysis.
 type GetTenantUserAnalysisT struct {
+	TenantKey
 	UserID     int64
 	AnalysisID int64
-	TenantID   int64
 }
 
 func (arg *GetTenantUserAnalysisT) sqlcParams() *db.GetTenantUserAnalysisParams {
@@ -83,7 +93,7 @@ func (q *groupedMeshStore[SK]) GetAnalysis(ctx context.Context, arg *GetAnalysis
 	// Resolve the shard key for this topology.
 	var shardKey SK
 	if q.store.resolver != nil {
-		shardKey = q.store.resolver.Tenant(arg.TenantID)
+		shardKey = q.store.resolver.TenantKey(arg.TenantKey)
 	}
 	shard, err := q.store.mesh.Shard(shardKey)
 	if err != nil {
@@ -97,17 +107,17 @@ func (q *groupedMeshStore[SK]) GetAnalysis(ctx context.Context, arg *GetAnalysis
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
 		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeTransaction)
-		return shard.Write().WithTx(options.tx).GetAnalysis(ctx, arg)
+		return shard.Write().WithTx(options.tx).GetAnalysis(ctx, arg.sqlcParams())
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
 		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModePrimary)
-		return shard.Write().GetAnalysis(ctx, arg)
+		return shard.Write().GetAnalysis(ctx, arg.sqlcParams())
 
 	// Ordinary reads use the shard's replica route.
 	default:
 		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeRead)
-		return shard.Read().GetAnalysis(ctx, arg)
+		return shard.Read().GetAnalysis(ctx, arg.sqlcParams())
 	}
 }
 
@@ -120,7 +130,7 @@ func (q *groupedMeshStore[SK]) GetTenantUserAnalysis(ctx context.Context, arg *G
 	// Resolve the shard key for this topology.
 	var shardKey SK
 	if q.store.resolver != nil {
-		shardKey = q.store.resolver.Tenant(arg.TenantID)
+		shardKey = q.store.resolver.TenantKey(arg.TenantKey)
 	}
 	shard, err := q.store.mesh.Shard(shardKey)
 	if err != nil {

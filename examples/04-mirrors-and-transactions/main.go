@@ -36,11 +36,11 @@ type poolRegistry struct {
 
 type tenantResolver struct{}
 
-func (tenantResolver) Tenant(tenantID int64) uint64 {
-	if tenantID < 0 {
+func (tenantResolver) TenantKey(key sharded.TenantKey) uint64 {
+	if key.TenantID < 0 {
 		panic("tenant ID must not be negative")
 	}
-	return uint64(tenantID)
+	return uint64(key.TenantID)
 }
 
 func main() {
@@ -188,8 +188,8 @@ func dualWriteToFutureShard(
 	accountID int64,
 ) error {
 	_, err := accounts.UpsertAccount(ctx, &sharded.UpsertAccountT{
+		TenantKey:   sharded.TenantKey{TenantID: tenantID},
 		ID:          accountID,
-		TenantID:    tenantID,
 		DisplayName: "mirrored write",
 	})
 	if err != nil {
@@ -207,7 +207,7 @@ func updateInTransaction(
 	accountID int64,
 ) (*sharded.Account, error) {
 	shardName := shard0Name
-	if (tenantResolver{}).Tenant(tenantID)%numVShards == 1 {
+	if (tenantResolver{}).TenantKey(sharded.TenantKey{TenantID: tenantID})%numVShards == 1 {
 		shardName = shard1Name
 	}
 	dsn, err := cfg.primaryDSN(shardName)
@@ -234,7 +234,7 @@ func updateInTransaction(
 	updated, err := accounts.UpdateAccountName(
 		ctx,
 		&sharded.UpdateAccountNameT{
-			TenantID:    tenantID,
+			TenantKey:   sharded.TenantKey{TenantID: tenantID},
 			ID:          accountID,
 			DisplayName: "transactional update",
 		},

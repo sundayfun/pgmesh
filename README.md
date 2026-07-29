@@ -48,13 +48,13 @@ should be routed automatically:
 ```sql
 -- name: GetAccount :one
 -- kind: read
--- shard: tenant(tenant_id)
+-- shard: tenantKey(tenant_id)
 -- store: Accounts
 SELECT * FROM accounts WHERE tenant_id = $1 AND id = $2;
 
 -- name: UpsertAccount :one
 -- kind: write
--- shard: tenant(tenant_id)
+-- shard: tenantKey(tenant_id)
 -- store: Accounts
 INSERT INTO accounts (id, tenant_id, display_name) VALUES ($1, $2, $3)
 ON CONFLICT (id) DO UPDATE SET display_name = EXCLUDED.display_name
@@ -72,9 +72,9 @@ Construct the generated `Store` with a singleton topology:
 
 ```go
 queries, err := db.NewStore(ctx, db.Singleton(pool))
-account, err := queries.Accounts().GetAccount(ctx, &db.GetAccountParams{
-    TenantID: tenantID,
-    ID:       accountID,
+account, err := queries.Accounts().GetAccount(ctx, &db.GetAccountT{
+    TenantKey: db.TenantKey{TenantID: tenantID},
+    ID:        accountID,
 })
 ```
 

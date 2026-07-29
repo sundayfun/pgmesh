@@ -22,7 +22,7 @@ Use the same resolver, hasher, and mapping as the store configuration:
 
 ```go
 resolver := tenantResolver{}
-key := resolver.Tenant(tenantID)
+key := resolver.TenantKey(db.TenantKey{TenantID: tenantID})
 vshard := hasher.Hash(key)
 replicaSetName := configuredReplicaSetFor(vshard)
 ```

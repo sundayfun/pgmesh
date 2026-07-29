@@ -35,14 +35,21 @@ func TestSeparatePackageStoreAgainstPostgres(t *testing.T) {
 
 	created, err := queries.Users().CreateUser(
 		t.Context(),
-		&store.CreateUserParams{ID: 99001, TenantID: 99002, Name: "separate"},
+		&store.CreateUserT{
+			TenantKey: store.TenantKey{TenantID: 99002},
+			ID:        99001,
+			Name:      "separate",
+		},
 	)
 	require.NoError(t, err)
 	require.NotNil(t, created)
 
 	got, err := queries.Users().GetUser(
 		t.Context(),
-		&store.GetUserParams{TenantID: created.TenantID, ID: created.ID},
+		&store.GetUserT{
+			TenantKey: store.TenantKey{TenantID: created.TenantID},
+			ID:        created.ID,
+		},
 	)
 	require.NoError(t, err)
 	assert.Equal(t, created, got)
@@ -50,8 +57,8 @@ func TestSeparatePackageStoreAgainstPostgres(t *testing.T) {
 	listed, err := queries.Users().ListUsersByIDs(
 		t.Context(),
 		[]*store.ListUsersByIDsT{{
-			ID:       created.ID,
-			TenantID: created.TenantID,
+			TenantKey: store.TenantKey{TenantID: created.TenantID},
+			ID:        created.ID,
 		}},
 		store.ReadFromPrimary(),
 	)

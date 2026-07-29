@@ -124,6 +124,7 @@ The stable default public surface is:
 | `NewStore(ctx, topology, ...StoreOption)` | Store constructor, group factories, and common telemetry options |
 | `Singleton(primary, ...SingletonOption)` | Single-primary topology with optional replicas and mirrors |
 | `Sharded(numVShards, hasher, resolver, ...ShardedOption)` | Sharded topology, emitted for routed stores |
+| `<Route>` | Shared shard-key struct generated from `shard: route(operand, ...)` |
 | `ReadFromPrimary`, `WithTx` | Per-query routing options |
 
 Repeated topology options append in call order. Common scalar store options,

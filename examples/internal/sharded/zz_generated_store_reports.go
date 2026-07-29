@@ -7,10 +7,15 @@ import (
 	pgmesh "github.com/sundayfun/pgmesh"
 )
 
+// CountAccountsT combines SQL and routing parameters for CountAccounts.
+type CountAccountsT struct {
+	TenantKey
+}
+
 // ReportsReader exposes read queries in the Reports store group.
 type ReportsReader interface {
 	// CountAccounts executes the generated CountAccounts query.
-	CountAccounts(ctx context.Context, tenantID int64, storeOptions ...QueryOption) (int64, error)
+	CountAccounts(ctx context.Context, arg *CountAccountsT, storeOptions ...QueryOption) (int64, error)
 }
 
 // ReportsWriter exposes write queries in the Reports store group.
@@ -28,10 +33,10 @@ type telemetryReportsStore[SK any] struct {
 	target Reports
 }
 
-func (q *telemetryReportsStore[SK]) CountAccounts(ctx context.Context, tenantID int64, storeOptions ...QueryOption) (result int64, err error) {
+func (q *telemetryReportsStore[SK]) CountAccounts(ctx context.Context, arg *CountAccountsT, storeOptions ...QueryOption) (result int64, err error) {
 	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Reports", "CountAccounts", pgmesh.QueryKindRead)
 	defer func() { storeSpan.End(err) }()
-	return q.target.CountAccounts(ctx, tenantID, storeOptions...)
+	return q.target.CountAccounts(ctx, arg, storeOptions...)
 }
 
 // WithReportsFactory configures an optional wrapper for the Reports query group.
@@ -49,7 +54,7 @@ func (q *meshStore[SK]) Reports() Reports {
 }
 
 // CountAccounts executes the generated query on its target shard.
-func (q *groupedMeshStore[SK]) CountAccounts(ctx context.Context, tenantID int64, storeOptions ...QueryOption) (result int64, err error) {
+func (q *groupedMeshStore[SK]) CountAccounts(ctx context.Context, arg *CountAccountsT, storeOptions ...QueryOption) (result int64, err error) {
 	// Trace the query and record its returned error.
 	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Reports", "CountAccounts", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()
@@ -57,7 +62,7 @@ func (q *groupedMeshStore[SK]) CountAccounts(ctx context.Context, tenantID int64
 	// Resolve the shard key for this topology.
 	var shardKey SK
 	if q.store.resolver != nil {
-		shardKey = q.store.resolver.Tenant(tenantID)
+		shardKey = q.store.resolver.TenantKey(arg.TenantKey)
 	}
 	shard, err := q.store.mesh.Shard(shardKey)
 	if err != nil {
@@ -71,16 +76,16 @@ func (q *groupedMeshStore[SK]) CountAccounts(ctx context.Context, tenantID int64
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
 		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeTransaction)
-		return shard.Write().WithTx(options.tx).CountAccounts(ctx, tenantID)
+		return shard.Write().WithTx(options.tx).CountAccounts(ctx, arg.TenantKey.TenantID)
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
 		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModePrimary)
-		return shard.Write().CountAccounts(ctx, tenantID)
+		return shard.Write().CountAccounts(ctx, arg.TenantKey.TenantID)
 
 	// Ordinary reads use the shard's replica route.
 	default:
 		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeRead)
-		return shard.Read().CountAccounts(ctx, tenantID)
+		return shard.Read().CountAccounts(ctx, arg.TenantKey.TenantID)
 	}
 }

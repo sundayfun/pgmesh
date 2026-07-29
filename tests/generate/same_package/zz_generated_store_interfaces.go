@@ -52,10 +52,22 @@ var _ readQuerier = (*readQueries)(nil)
 var _ writeQuerier = (*writeQueries)(nil)
 var _ Querier = (*queryStore)(nil)
 
+// MessageKey is the shared shard key for the "messageKey" route.
+type MessageKey struct {
+	UserID          int64
+	ToUserOrGroupID int64
+	InGroup         bool
+}
+
+// TenantKey is the shared shard key for the "tenantKey" route.
+type TenantKey struct {
+	TenantID int64
+}
+
 // ShardResolver resolves generated query parameters to shard keys.
 type ShardResolver[SK any] interface {
 	// MessageKey resolves the "messageKey" shard route.
-	MessageKey(userID int64, toUserOrGroupID int64, inGroup bool) SK
-	// Tenant resolves the "tenant" shard route.
-	Tenant(tenantID int64) SK
+	MessageKey(key MessageKey) SK
+	// TenantKey resolves the "tenantKey" shard route.
+	TenantKey(key TenantKey) SK
 }

@@ -78,8 +78,8 @@ func writeAccount(
 	accounts sharded.AccountsWriter,
 ) (*sharded.Account, error) {
 	account, err := accounts.UpsertAccount(ctx, &sharded.UpsertAccountT{
+		TenantKey:   sharded.TenantKey{TenantID: 42},
 		ID:          2001,
-		TenantID:    42,
 		DisplayName: "primary write",
 	})
 	if err != nil {
@@ -115,7 +115,10 @@ func printReplicaRead(
 }
 
 func accountKey(account *sharded.Account) *sharded.GetAccountT {
-	return &sharded.GetAccountT{TenantID: account.TenantID, ID: account.ID}
+	return &sharded.GetAccountT{
+		TenantKey: sharded.TenantKey{TenantID: account.TenantID},
+		ID:        account.ID,
+	}
 }
 
 func openPool(ctx context.Context, environment string) (*pgxpool.Pool, error) {
