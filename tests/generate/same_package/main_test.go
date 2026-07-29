@@ -281,22 +281,22 @@ func (tx *fakeTx) Conn() *pgx.Conn {
 
 type tenantResolver struct{}
 
-func (tenantResolver) Tenant(int64) uint64 {
+func (tenantResolver) TenantKey(TenantKey) uint64 {
 	return 0
 }
 
-func (tenantResolver) MessageKey(int64, int64, bool) uint64 {
+func (tenantResolver) MessageKey(MessageKey) uint64 {
 	return 0
 }
 
 type identityTenantResolver struct{}
 
-func (identityTenantResolver) Tenant(tenantID int64) uint64 {
-	return uint64(tenantID) //nolint:gosec // Test fixtures use nonnegative IDs.
+func (identityTenantResolver) TenantKey(key TenantKey) uint64 {
+	return uint64(key.TenantID) //nolint:gosec // Test fixtures use nonnegative IDs.
 }
 
-func (identityTenantResolver) MessageKey(userID, _ int64, _ bool) uint64 {
-	return uint64(userID) //nolint:gosec // Test fixtures use nonnegative IDs.
+func (identityTenantResolver) MessageKey(key MessageKey) uint64 {
+	return uint64(key.UserID) //nolint:gosec // Test fixtures use nonnegative IDs.
 }
 
 type identityShardHasher struct{}
@@ -309,12 +309,12 @@ type recordingTenantResolver struct {
 	tenantID *int64
 }
 
-func (r recordingTenantResolver) Tenant(tenantID int64) uint64 {
-	*r.tenantID = tenantID
+func (r recordingTenantResolver) TenantKey(key TenantKey) uint64 {
+	*r.tenantID = key.TenantID
 	return 0
 }
 
-func (recordingTenantResolver) MessageKey(int64, int64, bool) uint64 {
+func (recordingTenantResolver) MessageKey(MessageKey) uint64 {
 	return 0
 }
 
@@ -324,18 +324,14 @@ type recordingMessageKeyResolver struct {
 	inGroup         bool
 }
 
-func (recordingMessageKeyResolver) Tenant(int64) uint64 {
+func (recordingMessageKeyResolver) TenantKey(TenantKey) uint64 {
 	return 0
 }
 
-func (r *recordingMessageKeyResolver) MessageKey(
-	userID int64,
-	toUserOrGroupID int64,
-	inGroup bool,
-) uint64 {
-	r.userID = userID
-	r.toUserOrGroupID = toUserOrGroupID
-	r.inGroup = inGroup
+func (r *recordingMessageKeyResolver) MessageKey(key MessageKey) uint64 {
+	r.userID = key.UserID
+	r.toUserOrGroupID = key.ToUserOrGroupID
+	r.inGroup = key.InGroup
 	return 0
 }
 
@@ -444,7 +440,7 @@ func TestGeneratedStoreFactoriesWrapSelectedGroupsOnce(t *testing.T) {
 
 			user, err := store.Users().GetUser(
 				t.Context(),
-				&GetUserParams{ID: 1, TenantID: 2},
+				&GetUserT{TenantKey: TenantKey{TenantID: 2}, ID: 1},
 			)
 			require.NoError(t, err)
 			assert.Equal(t, int64(10), user.ID)
@@ -672,12 +668,12 @@ func TestGeneratedGroupedManyPartitionsAndRestoresInputOrder(t *testing.T) {
 	)
 
 	users, err := store.Users().ListUsersByIDs(t.Context(), []*ListUsersByIDsT{
-		{ID: 20, TenantID: 1},
-		{ID: 10, TenantID: 0},
-		{ID: 99, TenantID: 3},
-		{ID: 21, TenantID: 3},
-		{ID: 10, TenantID: 2},
-		{ID: 12, TenantID: 2},
+		{TenantKey: TenantKey{TenantID: 1}, ID: 20},
+		{TenantKey: TenantKey{TenantID: 0}, ID: 10},
+		{TenantKey: TenantKey{TenantID: 3}, ID: 99},
+		{TenantKey: TenantKey{TenantID: 3}, ID: 21},
+		{TenantKey: TenantKey{TenantID: 2}, ID: 10},
+		{TenantKey: TenantKey{TenantID: 2}, ID: 12},
 	})
 	require.NoError(t, err)
 	require.Len(t, users, 4)
@@ -715,7 +711,10 @@ func TestGeneratedGroupedManyPrimaryAndTransactionRouting(t *testing.T) {
 
 		users, err := store.Users().ListUsersByIDs(
 			t.Context(),
-			[]*ListUsersByIDsT{{ID: 20, TenantID: 1}, {ID: 10, TenantID: 0}},
+			[]*ListUsersByIDsT{
+				{TenantKey: TenantKey{TenantID: 1}, ID: 20},
+				{TenantKey: TenantKey{TenantID: 0}, ID: 10},
+			},
 			ReadFromPrimary(),
 		)
 		require.NoError(t, err)
@@ -739,7 +738,10 @@ func TestGeneratedGroupedManyPrimaryAndTransactionRouting(t *testing.T) {
 
 		users, err := store.Users().ListUsersByIDs(
 			t.Context(),
-			[]*ListUsersByIDsT{{ID: 10, TenantID: 0}, {ID: 20, TenantID: 1}},
+			[]*ListUsersByIDsT{
+				{TenantKey: TenantKey{TenantID: 0}, ID: 10},
+				{TenantKey: TenantKey{TenantID: 1}, ID: 20},
+			},
 			WithTx(&fakeTx{fakeDB: &fakeDB{name: "tx", log: log, users: []*User{}}}),
 		)
 		require.ErrorIs(t, err, pgmesh.ErrCrossShardTransaction)
@@ -764,7 +766,10 @@ func TestGeneratedGroupedManyPrimaryAndTransactionRouting(t *testing.T) {
 
 		users, err := store.Users().ListUsersByIDs(
 			t.Context(),
-			[]*ListUsersByIDsT{{ID: 10, TenantID: 0}, {ID: 12, TenantID: 2}},
+			[]*ListUsersByIDsT{
+				{TenantKey: TenantKey{TenantID: 0}, ID: 10},
+				{TenantKey: TenantKey{TenantID: 2}, ID: 12},
+			},
 			WithTx(&fakeTx{fakeDB: txDB}),
 		)
 		require.NoError(t, err)
@@ -837,7 +842,10 @@ func TestGeneratedGroupedManyPreflightAndFailureBehavior(t *testing.T) {
 
 		users, err := store.Users().ListUsersByIDs(
 			t.Context(),
-			[]*ListUsersByIDsT{{ID: 10, TenantID: 0}, {ID: 11, TenantID: 4}},
+			[]*ListUsersByIDsT{
+				{TenantKey: TenantKey{TenantID: 0}, ID: 10},
+				{TenantKey: TenantKey{TenantID: 4}, ID: 11},
+			},
 		)
 		require.ErrorIs(t, err, pgmesh.ErrVShardOutOfRange)
 		require.ErrorContains(t, err, "input 1")
@@ -862,7 +870,10 @@ func TestGeneratedGroupedManyPreflightAndFailureBehavior(t *testing.T) {
 
 		users, err := store.Users().ListUsersByIDs(
 			t.Context(),
-			[]*ListUsersByIDsT{{ID: 10, TenantID: 0}, {ID: 20, TenantID: 1}},
+			[]*ListUsersByIDsT{
+				{TenantKey: TenantKey{TenantID: 0}, ID: 10},
+				{TenantKey: TenantKey{TenantID: 1}, ID: 20},
+			},
 		)
 		require.ErrorIs(t, err, queryErr)
 		require.ErrorContains(t, err, `replica set "shard-b"`)
@@ -886,7 +897,7 @@ func TestGeneratedGroupedManyPreflightAndFailureBehavior(t *testing.T) {
 
 		users, err := store.Users().ListUsersByIDs(
 			t.Context(),
-			[]*ListUsersByIDsT{{ID: 10, TenantID: 0}},
+			[]*ListUsersByIDsT{{TenantKey: TenantKey{TenantID: 0}, ID: 10}},
 		)
 		require.ErrorContains(t, err, "unrequested lookup key")
 		assert.Nil(t, users)
@@ -911,11 +922,11 @@ func TestGeneratedGroupedCopyPartitionsByPhysicalShard(t *testing.T) {
 		mirror,
 	)
 
-	count, err := store.Users().CopyUsers(t.Context(), []*CopyUsersParams{
-		{ID: 10, TenantID: 0, Name: "b0"},
-		{ID: 11, TenantID: 1, Name: "a1"},
-		{ID: 12, TenantID: 2, Name: "b2"},
-		{ID: 13, TenantID: 3, Name: "a3"},
+	count, err := store.Users().CopyUsers(t.Context(), []*CopyUsersT{
+		{TenantKey: TenantKey{TenantID: 0}, ID: 10, Name: "b0"},
+		{TenantKey: TenantKey{TenantID: 1}, ID: 11, Name: "a1"},
+		{TenantKey: TenantKey{TenantID: 2}, ID: 12, Name: "b2"},
+		{TenantKey: TenantKey{TenantID: 3}, ID: 13, Name: "a3"},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, int64(4), count)
@@ -952,9 +963,9 @@ func TestGeneratedGroupedCopyPreflightsRoutesAndTransactions(t *testing.T) {
 			nil,
 		)
 
-		count, err := store.Users().CopyUsers(t.Context(), []*CopyUsersParams{
-			{ID: 10, TenantID: 0},
-			{ID: 11, TenantID: 4},
+		count, err := store.Users().CopyUsers(t.Context(), []*CopyUsersT{
+			{TenantKey: TenantKey{TenantID: 0}, ID: 10},
+			{TenantKey: TenantKey{TenantID: 4}, ID: 11},
 		})
 		require.ErrorIs(t, err, pgmesh.ErrVShardOutOfRange)
 		require.ErrorContains(t, err, "input 1")
@@ -979,7 +990,10 @@ func TestGeneratedGroupedCopyPreflightsRoutesAndTransactions(t *testing.T) {
 
 		count, err := store.Users().CopyUsers(
 			t.Context(),
-			[]*CopyUsersParams{{ID: 10, TenantID: 0}, {ID: 11, TenantID: 1}},
+			[]*CopyUsersT{
+				{TenantKey: TenantKey{TenantID: 0}, ID: 10},
+				{TenantKey: TenantKey{TenantID: 1}, ID: 11},
+			},
 			WithTx(tx),
 		)
 		require.ErrorIs(t, err, pgmesh.ErrCrossShardTransaction)
@@ -1006,7 +1020,10 @@ func TestGeneratedGroupedCopyPreflightsRoutesAndTransactions(t *testing.T) {
 
 		count, err := store.Users().CopyUsers(
 			t.Context(),
-			[]*CopyUsersParams{{ID: 10, TenantID: 0}, {ID: 12, TenantID: 2}},
+			[]*CopyUsersT{
+				{TenantKey: TenantKey{TenantID: 0}, ID: 10},
+				{TenantKey: TenantKey{TenantID: 2}, ID: 12},
+			},
 			WithTx(&fakeTx{fakeDB: txDB}),
 		)
 		require.NoError(t, err)
@@ -1053,9 +1070,9 @@ func TestGeneratedGroupedCopyAttemptsEveryGroupAndZerosFailures(t *testing.T) {
 		nil,
 	)
 
-	count, err := store.Users().CopyUsers(t.Context(), []*CopyUsersParams{
-		{ID: 10, TenantID: 0},
-		{ID: 11, TenantID: 1},
+	count, err := store.Users().CopyUsers(t.Context(), []*CopyUsersT{
+		{TenantKey: TenantKey{TenantID: 0}, ID: 10},
+		{TenantKey: TenantKey{TenantID: 1}, ID: 11},
 	})
 	require.ErrorIs(t, err, copyErr)
 	require.ErrorContains(t, err, `replica set "shard-b"`)
@@ -1087,9 +1104,9 @@ func TestGeneratedRoutingOnlyShardArgument(t *testing.T) {
 	row, err := store.Analyses().GetTenantUserAnalysis(
 		t.Context(),
 		&GetTenantUserAnalysisT{
+			TenantKey:  TenantKey{TenantID: 42},
 			UserID:     10,
 			AnalysisID: 20,
-			TenantID:   42,
 		},
 	)
 	require.NoError(t, err)
@@ -1122,9 +1139,11 @@ func TestGeneratedP2PShardArgumentUsesMessageModel(t *testing.T) {
 	_, err = store.QueryMessage().ListP2PMessageIDsByChat(
 		t.Context(),
 		&ListP2PMessageIDsByChatT{
-			UserID:          11,
-			ToUserOrGroupID: 22,
-			InGroup:         false,
+			MessageKey: MessageKey{
+				UserID:          11,
+				ToUserOrGroupID: 22,
+				InGroup:         false,
+			},
 		},
 	)
 	require.ErrorContains(t, err, "fake rows are not configured")
@@ -1164,9 +1183,9 @@ func TestGeneratedTopologyOptionsCloneInputs(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	_, err = store.Users().GetUser(t.Context(), &GetUserParams{TenantID: 1, ID: 2})
+	_, err = store.Users().GetUser(t.Context(), &GetUserT{TenantKey: TenantKey{TenantID: 1}, ID: 2})
 	require.NoError(t, err)
-	_, err = store.Users().CreateUser(t.Context(), &CreateUserParams{ID: 1, TenantID: 2, Name: "user"})
+	_, err = store.Users().CreateUser(t.Context(), &CreateUserT{TenantKey: TenantKey{TenantID: 2}, ID: 1, Name: "user"})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"replica", "primary", "mirror"}, log.snapshot())
 }
@@ -1205,24 +1224,24 @@ func TestGeneratedStoreTelemetryWiring(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	_, err = store.Users().GetUser(t.Context(), &GetUserParams{TenantID: 1, ID: 2})
+	_, err = store.Users().GetUser(t.Context(), &GetUserT{TenantKey: TenantKey{TenantID: 1}, ID: 2})
 	require.NoError(t, err)
 	_, err = store.Users().GetUser(
 		t.Context(),
-		&GetUserParams{TenantID: 1, ID: 2},
+		&GetUserT{TenantKey: TenantKey{TenantID: 1}, ID: 2},
 		ReadFromPrimary(),
 	)
 	require.NoError(t, err)
 	tx := &fakeTx{fakeDB: &fakeDB{name: "tx", log: callLog}}
 	_, err = store.Users().GetUser(
 		t.Context(),
-		&GetUserParams{TenantID: 1, ID: 2},
+		&GetUserT{TenantKey: TenantKey{TenantID: 1}, ID: 2},
 		WithTx(tx),
 	)
 	require.NoError(t, err)
 	user, err := store.Users().CreateUser(
 		t.Context(),
-		&CreateUserParams{ID: 1, TenantID: 2, Name: "user"},
+		&CreateUserT{TenantKey: TenantKey{TenantID: 2}, ID: 1, Name: "user"},
 	)
 	require.ErrorIs(t, err, mirrorErr)
 	require.NotNil(t, user)
@@ -1315,7 +1334,7 @@ func TestGeneratedStoreFactoryTelemetrySeparatesCacheAndInternalQuerySignals(t *
 	assert.Equal(t, cached, listed)
 	_, err = store.Users().GetUser(
 		t.Context(),
-		&GetUserParams{ID: 1, TenantID: 2},
+		&GetUserT{TenantKey: TenantKey{TenantID: 2}, ID: 1},
 	)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"primary"}, callLog.snapshot())
@@ -1425,9 +1444,9 @@ func TestGeneratedStoreBehavior(t *testing.T) {
 					&fakeDB{name: "replica", log: log},
 				)
 
-				_, err := store.Users().GetUser(t.Context(), &GetUserParams{TenantID: 1, ID: 2})
+				_, err := store.Users().GetUser(t.Context(), &GetUserT{TenantKey: TenantKey{TenantID: 1}, ID: 2})
 				require.NoError(t, err)
-				_, err = store.Users().GetUser(t.Context(), &GetUserParams{TenantID: 1, ID: 2}, ReadFromPrimary())
+				_, err = store.Users().GetUser(t.Context(), &GetUserT{TenantKey: TenantKey{TenantID: 1}, ID: 2}, ReadFromPrimary())
 				require.NoError(t, err)
 				assert.Equal(t, []string{"replica", "primary"}, log.snapshot())
 			},
@@ -1442,7 +1461,7 @@ func TestGeneratedStoreBehavior(t *testing.T) {
 					&fakeDB{name: "replica", log: log},
 				)
 
-				_, err := store.Users().GetUser(t.Context(), &GetUserParams{TenantID: 1, ID: 2}, nil)
+				_, err := store.Users().GetUser(t.Context(), &GetUserT{TenantKey: TenantKey{TenantID: 1}, ID: 2}, nil)
 				require.NoError(t, err)
 				assert.Equal(t, []string{"replica"}, log.snapshot())
 			},
@@ -1459,7 +1478,7 @@ func TestGeneratedStoreBehavior(t *testing.T) {
 					&fakeDB{name: "mirror-after-missing", log: log},
 				)
 
-				user, err := store.Users().CreateUser(t.Context(), &CreateUserParams{ID: 1, TenantID: 2, Name: "user"})
+				user, err := store.Users().CreateUser(t.Context(), &CreateUserT{TenantKey: TenantKey{TenantID: 2}, ID: 1, Name: "user"})
 				require.NoError(t, err)
 				require.NotNil(t, user)
 				assert.Equal(t, []string{"primary", "mirror", "mirror-after-missing"}, log.snapshot())
@@ -1477,7 +1496,7 @@ func TestGeneratedStoreBehavior(t *testing.T) {
 					&fakeDB{name: "mirror1", log: log},
 				)
 
-				_, err := store.Users().CreateUser(t.Context(), &CreateUserParams{ID: 1, TenantID: 2, Name: "user"})
+				_, err := store.Users().CreateUser(t.Context(), &CreateUserT{TenantKey: TenantKey{TenantID: 2}, ID: 1, Name: "user"})
 				require.NoError(t, err)
 				assert.Equal(t, []string{"primary", "mirror0", "mirror1"}, log.snapshot())
 			},
@@ -1495,7 +1514,7 @@ func TestGeneratedStoreBehavior(t *testing.T) {
 					&fakeDB{name: "mirror-not-called", log: log},
 				)
 
-				user, err := store.Users().CreateUser(t.Context(), &CreateUserParams{ID: 1, TenantID: 2, Name: "user"})
+				user, err := store.Users().CreateUser(t.Context(), &CreateUserT{TenantKey: TenantKey{TenantID: 2}, ID: 1, Name: "user"})
 				require.ErrorIs(t, err, mirrorErr)
 				require.NotNil(t, user, "primary result must be retained when a mirror fails")
 				assert.Equal(t, []string{"primary", "mirror"}, log.snapshot())
@@ -1513,7 +1532,7 @@ func TestGeneratedStoreBehavior(t *testing.T) {
 					&fakeDB{name: "mirror", log: log},
 				)
 
-				user, err := store.Users().CreateUser(t.Context(), &CreateUserParams{ID: 1, TenantID: 2, Name: "user"})
+				user, err := store.Users().CreateUser(t.Context(), &CreateUserT{TenantKey: TenantKey{TenantID: 2}, ID: 1, Name: "user"})
 				require.ErrorIs(t, err, primaryErr)
 				assert.Nil(t, user)
 				assert.Equal(t, []string{"primary"}, log.snapshot())
@@ -1531,11 +1550,11 @@ func TestGeneratedStoreBehavior(t *testing.T) {
 				)
 				tx := &fakeTx{fakeDB: &fakeDB{name: "tx", log: log}}
 
-				_, err := store.Users().GetUser(t.Context(), &GetUserParams{TenantID: 1, ID: 2}, WithTx(tx))
+				_, err := store.Users().GetUser(t.Context(), &GetUserT{TenantKey: TenantKey{TenantID: 1}, ID: 2}, WithTx(tx))
 				require.NoError(t, err)
 				_, err = store.Users().CreateUser(
 					t.Context(),
-					&CreateUserParams{ID: 1, TenantID: 2, Name: "user"},
+					&CreateUserT{TenantKey: TenantKey{TenantID: 2}, ID: 1, Name: "user"},
 					WithTx(tx),
 				)
 				require.NoError(t, err)

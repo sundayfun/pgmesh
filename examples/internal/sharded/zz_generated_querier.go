@@ -10,19 +10,19 @@ import (
 
 type Querier interface {
 	// kind: read
-	// shard: tenant(tenant_id)
+	// shard: tenantKey(tenant_id)
 	// store: Reports
 	CountAccounts(ctx context.Context, tenantID int64) (int64, error)
 	// kind: read
-	// shard: tenant(tenant_id)
+	// shard: tenantKey(tenant_id)
 	// store: Accounts
 	GetAccount(ctx context.Context, arg *GetAccountParams) (*Account, error)
 	// kind: write
-	// shard: tenant(tenant_id)
+	// shard: tenantKey(tenant_id)
 	// store: Accounts
 	UpdateAccountName(ctx context.Context, arg *UpdateAccountNameParams) (*Account, error)
 	// kind: write
-	// shard: tenant(tenant_id)
+	// shard: tenantKey(tenant_id)
 	// store: Accounts
 	UpsertAccount(ctx context.Context, arg *UpsertAccountParams) (*Account, error)
 }

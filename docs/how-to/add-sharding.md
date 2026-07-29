@@ -10,21 +10,23 @@ If virtual shards, replica sets, or mappings are new terms, start with the
 ## 1. Choose a stable logical key
 
 Implement the generated resolver interface. For an annotation such as
-`shard: tenant(tenant_id)`, the generated interface includes `Tenant`:
+`shard: tenantKey(tenant_id)`, pgmesh generates a shared `TenantKey` and uses
+it as the resolver input:
 
 ```go
 type tenantResolver struct{}
 
-func (tenantResolver) Tenant(tenantID int64) uint64 {
-    if tenantID < 0 {
+func (tenantResolver) TenantKey(key db.TenantKey) uint64 {
+    if key.TenantID < 0 {
         panic("tenant ID must not be negative")
     }
-    return uint64(tenantID)
+    return uint64(key.TenantID)
 }
 ```
 
 Keep the resolver behavior stable after data is written. If a route combines
-multiple operands, normalize and combine them deterministically.
+multiple operands, all of them appear on its shared key struct; normalize and
+combine them deterministically.
 
 ## 2. Choose the virtual-shard count and hash
 
@@ -99,9 +101,9 @@ read/write-separated configuration. Normal reads use a replica when one is
 configured. Writes use the selected physical shard's primary:
 
 ```go
-account, err := queries.Accounts().UpsertAccount(ctx, &db.UpsertAccountParams{
+account, err := queries.Accounts().UpsertAccount(ctx, &db.UpsertAccountT{
+    TenantKey:   db.TenantKey{TenantID: tenantID},
     ID:          accountID,
-    TenantID:    tenantID,
     DisplayName: "Ada",
 })
 ```
@@ -111,7 +113,10 @@ Force a routed read to the primary when current data is required:
 ```go
 account, err := queries.Accounts().GetAccount(
     ctx,
-    &db.GetAccountParams{TenantID: tenantID, ID: accountID},
+    &db.GetAccountT{
+        TenantKey: db.TenantKey{TenantID: tenantID},
+        ID:        accountID,
+    },
     db.ReadFromPrimary(),
 )
 ```

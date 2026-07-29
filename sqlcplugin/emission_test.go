@@ -734,17 +734,18 @@ func TestGenerateShardRoutedFacade(t *testing.T) {
 		`func WithReplicaSet(name string, primary DBTX, replicas ...DBTX) ShardedOption`,
 		`func WithVShardMapping(mainReplicaSet string, vshards []uint64, mirrorReplicaSets ...string) ShardedOption`,
 		`func newStoreNode(database DBTX) pgmesh.Node[*readQueries, *queryStore]`,
+		"type P2P struct {\n\tUserID int64\n\tPeerID int64\n}",
 		"type ShardResolver[SK any] interface {\n\t// P2P resolves the \"p2p\" shard route.\n" +
-			"\tP2P(userID int64, peerID int64) SK\n}",
+			"\tP2P(key P2P) SK\n}",
 		"type meshStore[SK any] struct",
 		"type Store interface",
 		"func WithMessagesFactory(createMessages func(Messages) Messages) StoreOption",
 		"func ReadFromPrimary() QueryOption",
 		"func WithTx(tx pgx.Tx) QueryOption",
-		"type ListP2PMessagesT = ListP2PMessagesParams",
+		"type ListP2PMessagesT struct {\n\tP2P\n}",
 		"func (q *groupedMeshStore[SK]) ListP2PMessages(ctx context.Context, arg *ListP2PMessagesT, storeOptions ...QueryOption) (result []int64, err error)",
 		"var shardKey SK",
-		"shardKey = q.store.resolver.P2P(arg.UserID, arg.PeerID)",
+		"shardKey = q.store.resolver.P2P(arg.P2P)",
 		`q.store.mesh.StartSpan(ctx, "Messages", "ListP2PMessages", pgmesh.QueryKindRead)`,
 		`q.store.mesh.StartSpan(ctx, "Messages", "CreateP2PMessage", pgmesh.QueryKindWrite)`,
 		"// Trace the query and record its returned error.",
@@ -753,11 +754,11 @@ func TestGenerateShardRoutedFacade(t *testing.T) {
 		"// Apply options that can override the default route.",
 		"querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeRead)",
 		"querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeTransaction)",
-		"return shard.Read().ListP2PMessages(ctx, arg)",
-		"return shard.Write().WithTx(options.tx).ListP2PMessages(ctx, arg)",
+		"return shard.Read().ListP2PMessages(ctx, arg.sqlcParams())",
+		"return shard.Write().WithTx(options.tx).ListP2PMessages(ctx, arg.sqlcParams())",
 		"target := shard.Write()",
 		"querySpan.SetRoute(shard.VShardIndex(), shard.Name(), mode)",
-		"return target.CreateP2PMessage(ctx, arg)",
+		"return target.CreateP2PMessage(ctx, arg.sqlcParams())",
 	}
 	for _, check := range checks {
 		assert.Contains(t, got, check)
@@ -828,7 +829,12 @@ func TestGenerateWrapsRoutingOnlyShardOperand(t *testing.T) {
 	assert.Contains(
 		t,
 		got,
-		"type ListTenantUsersT struct {\n\tLimit    int32\n\tOffset   int32\n\tTenantID int64\n}",
+		"type Tenant struct {\n\tTenantID int64\n}",
+	)
+	assert.Contains(
+		t,
+		got,
+		"type ListTenantUsersT struct {\n\tTenant\n\tLimit  int32\n\tOffset int32\n}",
 	)
 	assert.Contains(
 		t,
@@ -850,10 +856,10 @@ func TestGenerateWrapsRoutingOnlyShardOperand(t *testing.T) {
 		"func (q *groupedMeshStore[SK]) ListTenantUsers(ctx context.Context, arg *ListTenantUsersT, storeOptions ...QueryOption)",
 	)
 	body := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListTenantUsers")
-	assert.Contains(t, body, "shardKey = q.store.resolver.Tenant(arg.TenantID)")
+	assert.Contains(t, body, "shardKey = q.store.resolver.Tenant(arg.Tenant)")
 	assert.Contains(t, body, "return shard.Read().ListTenantUsers(ctx, arg.sqlcParams())")
 	assert.Contains(t, got, "ListTenantUsers(ctx context.Context, arg *ListTenantUsersParams) ([]int64, error)")
-	assert.Contains(t, got, "Tenant(tenantID int64) SK")
+	assert.Contains(t, got, "Tenant(key Tenant) SK")
 
 	request.PluginOptions = []byte(`{
 		"package":"db",
@@ -874,6 +880,53 @@ func TestGenerateWrapsRoutingOnlyShardOperand(t *testing.T) {
 		valueSource,
 		"ListTenantUsers(ctx context.Context, arg ListTenantUsersT, storeOptions ...QueryOption)",
 	)
+}
+
+func TestGenerateReusesRouteNamedShardKeyInRoutedParameters(t *testing.T) {
+	t.Parallel()
+
+	int8Type := &plugin.Identifier{Schema: "pg_catalog", Name: "int8"}
+	textType := &plugin.Identifier{Name: "text"}
+	response, err := Generate(t.Context(), &plugin.GenerateRequest{
+		Settings: &plugin.Settings{Engine: "postgresql", Codegen: &plugin.Codegen{Out: "db"}},
+		Catalog:  &plugin.Catalog{DefaultSchema: "public"},
+		Queries: []*plugin.Query{
+			{
+				Name:     "GetTenantUser",
+				Cmd:      ":one",
+				Comments: []string{"kind: read", "shard: tenantKey(tenant_id)", "store: Users"},
+				Params: []*plugin.Parameter{
+					{Number: 1, Column: &plugin.Column{Name: "tenant_id", Type: int8Type, NotNull: true}},
+					{Number: 2, Column: &plugin.Column{Name: "id", Type: int8Type, NotNull: true}},
+				},
+				Columns: []*plugin.Column{{Name: "id", Type: int8Type, NotNull: true}},
+			},
+			{
+				Name:     "DeleteTenantUser",
+				Cmd:      ":exec",
+				Comments: []string{"kind: write", "shard: tenantKey(tenant_id)", "store: Users"},
+				Params: []*plugin.Parameter{
+					{Number: 1, Column: &plugin.Column{Name: "tenant_id", Type: int8Type, NotNull: true}},
+					{Number: 2, Column: &plugin.Column{Name: "name", Type: textType, NotNull: true}},
+				},
+			},
+		},
+		PluginOptions: []byte(`{
+			"package":"db",
+			"sql_package":"pgx/v5",
+			"query_parameter_limit":1
+		}`),
+	})
+	require.NoError(t, err)
+
+	got := generatedSource(response)
+	assert.Equal(t, 1, strings.Count(got, "type TenantKey struct {"))
+	assert.Contains(t, got, "type TenantKey struct {\n\tTenantID int64\n}")
+	assert.Contains(t, got, "TenantKey(key TenantKey) SK")
+	assert.Contains(t, got, "type GetTenantUserT struct {\n\tTenantKey\n\tID int64\n}")
+	assert.Contains(t, got, "type DeleteTenantUserT struct {\n\tTenantKey\n\tName string\n}")
+	assert.Equal(t, 2, strings.Count(got, "q.store.resolver.TenantKey(arg.TenantKey)"))
+	assert.Contains(t, got, "TenantID: arg.TenantKey.TenantID")
 }
 
 func TestGenerateGroupsListValuedManyByPhysicalShard(t *testing.T) {
@@ -948,18 +1001,18 @@ func TestGenerateGroupsListValuedManyByPhysicalShard(t *testing.T) {
 	assert.Contains(
 		t,
 		got,
-		"type ListUsersByIDT struct {\n\tID       int64\n\tTenantID int64\n}",
+		"type ListUsersByIDT struct {\n\tTenant\n\tID int64\n}",
 	)
 	assert.Contains(
 		t,
 		got,
 		"ListUsersByID(ctx context.Context, arg []*ListUsersByIDT, storeOptions ...QueryOption) ([]*User, error)",
 	)
-	assert.Contains(t, got, "Tenant(tenantID int64) SK")
+	assert.Contains(t, got, "Tenant(key Tenant) SK")
 	body := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListUsersByID")
 	assert.Contains(t, body, "if item == nil")
 	assert.Contains(t, body, "lookupValue := item.ID")
-	assert.Contains(t, body, "shardKey = q.store.resolver.Tenant(item.TenantID)")
+	assert.Contains(t, body, "shardKey = q.store.resolver.Tenant(item.Tenant)")
 	assert.Contains(t, body, "groupsByName[shard.Name()]")
 	assert.Contains(t, body, "shardGroup.args = append(shardGroup.args, lookupValue)")
 	assert.Contains(t, body, "shardGroup.shard.Read().ListUsersByID(ctx, shardGroup.args)")
@@ -1048,15 +1101,16 @@ func TestGenerateScalarizesGroupedManyResolverOperand(t *testing.T) {
 	require.NoError(t, err)
 
 	got := generatedSource(response)
-	assert.Contains(t, got, "User(iD int64) SK")
+	assert.Contains(t, got, "type User struct {\n\tID int64\n}")
+	assert.Contains(t, got, "User(key User) SK")
 	assert.Contains(
 		t,
 		got,
-		"ListUsersByIDs(ctx context.Context, ids []int64, storeOptions ...QueryOption) ([]int64, error)",
+		"ListUsersByIDs(ctx context.Context, arg []ListUsersByIDsT, storeOptions ...QueryOption) ([]int64, error)",
 	)
 	body := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListUsersByIDs")
-	assert.Contains(t, body, "lookupValue := item")
-	assert.Contains(t, body, "shardKey = q.store.resolver.User(item)")
+	assert.Contains(t, body, "lookupValue := item.User.ID")
+	assert.Contains(t, body, "shardKey = q.store.resolver.User(item.User)")
 	assert.Contains(t, body, "resultKey := any(row)")
 
 	request := &plugin.GenerateRequest{
@@ -1087,7 +1141,7 @@ func TestGenerateScalarizesGroupedManyResolverOperand(t *testing.T) {
 	structResponse, err := Generate(t.Context(), request)
 	require.NoError(t, err)
 	structSource := generatedSource(structResponse)
-	assert.Contains(t, structSource, "type ListUsersByIDsT struct {\n\tID int64\n}")
+	assert.Contains(t, structSource, "type ListUsersByIDsT struct {\n\tUser\n}")
 	assert.Contains(
 		t,
 		structSource,
@@ -1241,11 +1295,11 @@ func TestGenerateLeavesOtherManyShapesSingleShardRouted(t *testing.T) {
 	got := generatedSource(response)
 	assert.NotContains(t, got, "manyShardGroup")
 	tenantBody := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListTenantUsersByID")
-	assert.Contains(t, tenantBody, "shardKey = q.store.resolver.Tenant(arg.TenantID)")
-	assert.Contains(t, tenantBody, "return shard.Read().ListTenantUsersByID(ctx, arg)")
+	assert.Contains(t, tenantBody, "shardKey = q.store.resolver.Tenant(arg.Tenant)")
+	assert.Contains(t, tenantBody, "return shard.Read().ListTenantUsersByID(ctx, arg.sqlcParams())")
 	matrixBody := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListUsersByIDMatrix")
-	assert.Contains(t, matrixBody, "shardKey = q.store.resolver.User(id)")
-	assert.Contains(t, matrixBody, "return shard.Read().ListUsersByIDMatrix(ctx, id)")
+	assert.Contains(t, matrixBody, "shardKey = q.store.resolver.User(arg.User)")
+	assert.Contains(t, matrixBody, "return shard.Read().ListUsersByIDMatrix(ctx, arg.User.ID)")
 }
 
 func TestGenerateUsesRenamedModelFieldForRoutingOnlyShardOperand(t *testing.T) {
@@ -1287,12 +1341,13 @@ func TestGenerateUsesRenamedModelFieldForRoutingOnlyShardOperand(t *testing.T) {
 	require.NoError(t, err)
 
 	got := generatedSource(response)
-	assert.Contains(t, got, "type GetShardUserT struct {\n\tID    int64\n\tShard int64\n}")
+	assert.Contains(t, got, "type Tenant struct {\n\tShard int64\n}")
+	assert.Contains(t, got, "type GetShardUserT struct {\n\tTenant\n\tID int64\n}")
 	assert.Contains(t, got, "GetShardUser(ctx context.Context, arg GetShardUserT, storeOptions ...QueryOption)")
 	body := generatedMethodBody(t, got, "groupedMeshStore[SK]", "GetShardUser")
-	assert.Contains(t, body, "shardKey = q.store.resolver.Tenant(arg.Shard)")
+	assert.Contains(t, body, "shardKey = q.store.resolver.Tenant(arg.Tenant)")
 	assert.Contains(t, body, "return shard.Read().GetShardUser(ctx, arg.ID)")
-	assert.Contains(t, got, "Tenant(shard int64) SK")
+	assert.Contains(t, got, "Tenant(key Tenant) SK")
 }
 
 func TestGenerateAllowsCompatibleShardFieldsOnMultipleModels(t *testing.T) {
@@ -1339,10 +1394,10 @@ func TestGenerateAllowsCompatibleShardFieldsOnMultipleModels(t *testing.T) {
 	require.NoError(t, err)
 
 	got := generatedSource(response)
-	assert.Contains(t, got, "type ListMembershipsT struct {\n\tTenantID int64\n}")
-	assert.Contains(t, got, "Tenant(tenantID int64) SK")
+	assert.Contains(t, got, "type ListMembershipsT struct {\n\tTenant\n}")
+	assert.Contains(t, got, "Tenant(key Tenant) SK")
 	body := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListMemberships")
-	assert.Contains(t, body, "shardKey = q.store.resolver.Tenant(arg.TenantID)")
+	assert.Contains(t, body, "shardKey = q.store.resolver.Tenant(arg.Tenant)")
 	assert.Contains(t, body, "return shard.Read().ListMemberships(ctx)")
 }
 
@@ -1393,8 +1448,8 @@ func TestGeneratePrioritizesResultModelsForShardFieldLookup(t *testing.T) {
 	require.NoError(t, err)
 
 	got := generatedSource(response)
-	assert.Contains(t, got, "type ListUsersT struct {\n\tAuditFilter string\n\tTenantID    int64\n}")
-	assert.Contains(t, got, "Tenant(tenantID int64) SK")
+	assert.Contains(t, got, "type ListUsersT struct {\n\tTenant\n\tAuditFilter string\n}")
+	assert.Contains(t, got, "Tenant(key Tenant) SK")
 }
 
 func TestGenerateUsesSQLSourceTableWhenColumnProvenanceIsMissing(t *testing.T) {
@@ -1451,12 +1506,17 @@ func TestGenerateUsesSQLSourceTableWhenColumnProvenanceIsMissing(t *testing.T) {
 	assert.Contains(
 		t,
 		got,
-		"type ListP2PMessageIDsByChatT struct {\n\tUserID          int64\n\tToUserOrGroupID int64\n\tInGroup         bool\n}",
+		"type MessageKey struct {\n\tUserID          int64\n\tToUserOrGroupID int64\n\tInGroup         bool\n}",
 	)
 	assert.Contains(
 		t,
 		got,
-		"MessageKey(userID int64, toUserOrGroupID int64, inGroup bool) SK",
+		"type ListP2PMessageIDsByChatT struct {\n\tMessageKey\n}",
+	)
+	assert.Contains(
+		t,
+		got,
+		"MessageKey(key MessageKey) SK",
 	)
 }
 
@@ -1512,7 +1572,8 @@ func TestGenerateResolvesShardOperandsForIndividualParameters(t *testing.T) {
 	})
 	require.NoError(t, err)
 	got := generatedSource(response)
-	assert.Contains(t, got, "shardKey = q.store.resolver.P2P(userID, peerID)")
+	assert.Contains(t, got, "type GetP2PMessageT struct {\n\tP2P\n}")
+	assert.Contains(t, got, "shardKey = q.store.resolver.P2P(arg.P2P)")
 }
 
 func TestGenerateIgnoreMirrorErrorOption(t *testing.T) {
@@ -1661,7 +1722,7 @@ func TestGenerateRejectsInvalidRoutingConfigurations(t *testing.T) {
 			want: "list parameter must have a name",
 		},
 		{
-			name: "conflicting route signatures",
+			name: "shared shard key has different fields",
 			request: base(
 				&plugin.Query{
 					Name:     "GetByID",
@@ -1674,11 +1735,30 @@ func TestGenerateRejectsInvalidRoutingConfigurations(t *testing.T) {
 					Name:     "GetByName",
 					Cmd:      ":one",
 					Comments: []string{"kind: read", "shard: entity(name)", "store: Entities"},
-					Params:   []*plugin.Parameter{{Number: 1, Column: &plugin.Column{Name: "name", Type: textType, NotNull: true}}},
+					Params:   []*plugin.Parameter{{Number: 1, Column: &plugin.Column{Name: "name", Type: int8Type, NotNull: true}}},
 					Columns:  []*plugin.Column{{Name: "id", Type: int8Type, NotNull: true}},
 				},
 			),
-			want: "incompatible parameter types",
+			want: "shard key Entity is inconsistent between queries GetByID and GetByName: expected (ID int64), got (Name int64)",
+		},
+		{
+			name: "shared shard key field has different types",
+			request: base(
+				&plugin.Query{
+					Name:     "GetByID",
+					Cmd:      ":one",
+					Comments: []string{"kind: read", "shard: entity(id)", "store: Entities"},
+					Params:   []*plugin.Parameter{{Number: 1, Column: &plugin.Column{Name: "id", Type: int8Type, NotNull: true}}},
+					Columns:  []*plugin.Column{{Name: "id", Type: int8Type, NotNull: true}},
+				},
+				&plugin.Query{
+					Name:     "DeleteByID",
+					Cmd:      ":exec",
+					Comments: []string{"kind: write", "shard: entity(id)", "store: Entities"},
+					Params:   []*plugin.Parameter{{Number: 1, Column: &plugin.Column{Name: "id", Type: textType, NotNull: true}}},
+				},
+			),
+			want: "shard key Entity is inconsistent between queries DeleteByID and GetByID: expected (ID string), got (ID int64)",
 		},
 		{
 			name: "non pgx driver",
@@ -1905,14 +1985,14 @@ func TestGenerateGroupedCopyWithRoutingOnlyOperand(t *testing.T) {
 	assert.Contains(
 		t,
 		got,
-		"type CopyUsersT struct {\n\tID       int64\n\tName     string\n\tTenantID int64\n}",
+		"type CopyUsersT struct {\n\tTenant\n\tID   int64\n\tName string\n}",
 	)
 	assert.Contains(
 		t,
 		got,
 		"CopyUsers(ctx context.Context, arg []*CopyUsersT, storeOptions ...QueryOption) (int64, error)",
 	)
-	assert.Contains(t, got, "shardKey = q.store.resolver.Tenant(item.TenantID)")
+	assert.Contains(t, got, "shardKey = q.store.resolver.Tenant(item.Tenant)")
 	assert.Contains(t, got, "shardGroup.args = append(shardGroup.args, item.sqlcParams())")
 	assert.Contains(t, got, "target.CopyUsers(ctx, shardGroup.args)")
 	assert.Contains(t, got, `q.store.mesh.StartSpan(ctx, "Users", "CopyUsers", pgmesh.QueryKindWrite)`)
@@ -1941,10 +2021,11 @@ func TestGenerateGroupedCopyWithScalarParameter(t *testing.T) {
 	require.NoError(t, err)
 
 	got := generatedSource(response)
-	assert.Contains(t, got, "CopyIDs(ctx context.Context, id []int64, storeOptions ...QueryOption) (int64, error)")
-	assert.Contains(t, got, "shardKey = q.store.resolver.Entity(item)")
+	assert.Contains(t, got, "type CopyIDsT struct {\n\tEntity\n}")
+	assert.Contains(t, got, "CopyIDs(ctx context.Context, arg []CopyIDsT, storeOptions ...QueryOption) (int64, error)")
+	assert.Contains(t, got, "shardKey = q.store.resolver.Entity(item.Entity)")
 	assert.Contains(t, got, "args  []int64")
-	assert.Contains(t, got, "shardGroup.args = append(shardGroup.args, item)")
+	assert.Contains(t, got, "shardGroup.args = append(shardGroup.args, item.Entity.ID)")
 }
 
 func TestGenerateSupportsAllNodeLevelCommands(t *testing.T) {
@@ -2126,9 +2207,10 @@ func TestGenerateQualifiesSqlcTypesForSeparatePackage(t *testing.T) {
 		`db "example.test/project/internal/db"`,
 		`pgmesh "example.test/project/pgmesh"`,
 		"GetUser(ctx context.Context, arg *db.GetUserParams) (*db.User, error)",
-		"type GetUserT = db.GetUserParams",
+		"type User struct {\n\tToken db.Token\n}",
+		"type GetUserT struct {\n\tUser\n\tID       int64\n\tTenantID int64\n}",
 		"GetUser(ctx context.Context, arg *GetUserT, storeOptions ...QueryOption) (*db.User, error)",
-		"User(token db.Token) SK",
+		"User(key User) SK",
 		"main *db.Queries",
 		"func newReadQueries(q *db.Queries) *readQueries",
 		"var _ db.Querier = (*queryStore)(nil)",
@@ -2346,9 +2428,10 @@ func TestGenerateAppliesRenameAndNullableOptions(t *testing.T) {
 
 	got := generatedSource(response)
 	checks := []string{
-		"FindUser(ctx context.Context, arg *FindUserParams) (*string, error)",
-		"ResolveTenant(accountID int64) SK",
-		"shardKey = q.store.resolver.ResolveTenant(arg.AccountID)",
+		"type ResolveTenant struct {\n\tAccountID int64\n}",
+		"FindUser(ctx context.Context, arg *FindUserT, storeOptions ...QueryOption) (*string, error)",
+		"ResolveTenant(key ResolveTenant) SK",
+		"shardKey = q.store.resolver.ResolveTenant(arg.ResolveTenant)",
 	}
 	for _, check := range checks {
 		assert.Contains(t, got, check)

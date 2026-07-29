@@ -1,6 +1,6 @@
 -- name: GetUser :one
 -- kind: read
--- shard: tenant(tenant_id)
+-- shard: tenantKey(tenant_id)
 -- store: Users
 SELECT id, tenant_id, name
 FROM users
@@ -8,7 +8,7 @@ WHERE tenant_id = $1 AND id = $2;
 
 -- name: CreateUser :one
 -- kind: write
--- shard: tenant(tenant_id)
+-- shard: tenantKey(tenant_id)
 -- store: Users
 INSERT INTO users (id, tenant_id, name)
 VALUES ($1, $2, $3)
@@ -16,7 +16,7 @@ RETURNING id, tenant_id, name;
 
 -- name: UpdateUserName :one
 -- kind: write
--- shard: tenant(tenant_id)
+-- shard: tenantKey(tenant_id)
 -- store: Users
 UPDATE users
 SET name = $3
@@ -33,7 +33,7 @@ ORDER BY id;
 
 -- name: ListUsersByIDs :many
 -- kind: read
--- shard: tenant(tenant_id)
+-- shard: tenantKey(tenant_id)
 -- store: Users
 SELECT id, tenant_id, name
 FROM users
@@ -54,14 +54,14 @@ WHERE name = $1;
 
 -- name: CopyUsers :copyfrom
 -- kind: write
--- shard: tenant(tenant_id)
+-- shard: tenantKey(tenant_id)
 -- store: Users
 INSERT INTO users (id, tenant_id, name)
 VALUES ($1, $2, $3);
 
 -- name: GetAnalysis :one
 -- kind: read
--- shard: tenant(tenant_id)
+-- shard: tenantKey(tenant_id)
 -- store: Analyses
 SELECT id, tenant_id, summary, state, source, active_window
 FROM analyses
@@ -69,7 +69,7 @@ WHERE tenant_id = $1 AND id = $2;
 
 -- name: GetTenantUserAnalysis :one
 -- kind: read
--- shard: tenant(tenant_id)
+-- shard: tenantKey(tenant_id)
 -- store: Analyses
 SELECT users.id AS user_id, analyses.id AS analysis_id
 FROM users

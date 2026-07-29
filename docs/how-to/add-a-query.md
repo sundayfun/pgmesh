@@ -36,7 +36,7 @@ after `kind`:
 ```sql
 -- name: GetAccount :one
 -- kind: read
--- shard: tenant(tenant_id)
+-- shard: tenantKey(tenant_id)
 -- store: Accounts
 -- GetAccount returns one account within a tenant.
 SELECT id, tenant_id, display_name
@@ -44,20 +44,28 @@ FROM accounts
 WHERE tenant_id = $1 AND id = $2;
 ```
 
-`tenant` becomes a method on the generated `ShardResolver`:
+The route name becomes both an exported shared key type and a method on the
+generated `ShardResolver`:
 
 ```go
+type TenantKey struct {
+    TenantID int64
+}
+
 type ShardResolver[SK any] interface {
-    Tenant(tenantID int64) SK
+    TenantKey(key TenantKey) SK
 }
 ```
 
-Route operands normally name SQL parameters. They must resolve to compatible Go
-types anywhere the same route is used.
+Route operands become fields on the shared key. They normally name SQL
+parameters and must resolve to the same field names and compatible Go types
+everywhere the route is reused. Generation fails and names both queries when a
+shared key is reused with a different field list, order, or type.
 
-Store parameter structs consistently use the query name plus `T`. When sqlc
-generates `QueryNameParams`, pgmesh re-exports it as `QueryNameT`; when routing
-needs additional data, pgmesh generates `QueryNameT` with the combined fields.
+Store parameter structs consistently use the query name plus `T`. Routed
+queries always get a pgmesh-owned `QueryNameT` that embeds their shared key and
+contains only the remaining SQL fields. Unrouted structs can remain aliases of
+sqlc's `QueryNameParams`.
 
 Some shard-local queries do not need the shard value in their SQL. In that
 case, give the route a routing-only operand:
@@ -65,7 +73,7 @@ case, give the route a routing-only operand:
 ```sql
 -- name: ListTenantAccounts :many
 -- kind: read
--- shard: tenant(tenant_id)
+-- shard: tenantKey(tenant_id)
 -- store: Accounts
 SELECT id, display_name
 FROM accounts
@@ -80,16 +88,16 @@ fields. Only the original fields are passed to SQL:
 
 ```go
 type ListTenantAccountsT struct {
-    Limit    int32
-    Offset   int32
-    TenantID int64
+    TenantKey
+    Limit  int32
+    Offset int32
 }
 
 accounts, err := queries.Accounts().ListTenantAccounts(
     ctx,
     &db.ListTenantAccountsT{
-        Limit:    100,
-        TenantID: tenantID,
+        TenantKey: db.TenantKey{TenantID: tenantID},
+        Limit:     100,
     },
 )
 ```
@@ -108,7 +116,7 @@ automatically grouped by physical shard:
 ```sql
 -- name: ListAccountsByIDs :many
 -- kind: read
--- shard: tenant(tenant_id)
+-- shard: tenantKey(tenant_id)
 -- store: Accounts
 SELECT id, tenant_id, display_name
 FROM accounts
@@ -125,15 +133,21 @@ item containing both the singular lookup value and the routing data:
 
 ```go
 type ListAccountsByIDsT struct {
-    ID       int64
-    TenantID int64
+    TenantKey
+    ID int64
 }
 
 accounts, err := queries.Accounts().ListAccountsByIDs(
     ctx,
     []*db.ListAccountsByIDsT{
-        {ID: firstID, TenantID: firstTenantID},
-        {ID: secondID, TenantID: secondTenantID},
+        {
+            TenantKey: db.TenantKey{TenantID: firstTenantID},
+            ID:        firstID,
+        },
+        {
+            TenantKey: db.TenantKey{TenantID: secondTenantID},
+            ID:        secondID,
+        },
     },
 )
 ```
@@ -191,7 +205,7 @@ optional `shard` annotation:
 ```sql
 -- name: GetAccount :one
 -- kind: read
--- shard: tenant(tenant_id)
+-- shard: tenantKey(tenant_id)
 -- store: Accounts
 SELECT id, tenant_id, display_name
 FROM accounts
@@ -245,9 +259,9 @@ handwritten code.
 Business code always calls the same generated interface:
 
 ```go
-account, err := queries.Accounts().GetAccount(ctx, &db.GetAccountParams{
-    TenantID: tenantID,
-    ID:       accountID,
+account, err := queries.Accounts().GetAccount(ctx, &db.GetAccountT{
+    TenantKey: db.TenantKey{TenantID: tenantID},
+    ID:        accountID,
 })
 ```
 
@@ -264,7 +278,7 @@ A `:copyfrom` query may use an ordinary shard route:
 ```sql
 -- name: CopyAccounts :copyfrom
 -- kind: write
--- shard: tenant(tenant_id)
+-- shard: tenantKey(tenant_id)
 -- store: Accounts
 INSERT INTO accounts (id, tenant_id, display_name)
 VALUES ($1, $2, $3);
@@ -277,11 +291,10 @@ trips, where p is the number of targeted physical shards. Input order is
 preserved within each group, and configured write mirrors receive their
 physical shard's group.
 
-Routing-only operands produce a flattened `[]*CopyAccountsT`, using
-the same wrapper convention as ordinary routed queries. A routing error causes
-no copies. Database groups run concurrently and are all attempted; any error
-causes the method to return a zero count and a joined, replica-set-labeled
-error.
+Routed copy inputs use `[]*CopyAccountsT`; every item embeds the shared route
+key and contains the remaining SQL fields. A routing error causes no copies.
+Database groups run concurrently and are all attempted; any error causes the
+method to return a zero count and a joined, replica-set-labeled error.
 
 `WithTx` is accepted only when every row resolves to one physical shard. It
 returns `pgmesh.ErrCrossShardTransaction` before writing when multiple shards

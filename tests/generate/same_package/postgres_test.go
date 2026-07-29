@@ -25,12 +25,16 @@ import (
 
 type tenantResolver struct{}
 
-func (tenantResolver) Tenant(tenantID int64) uint64 {
-	return uint64(tenantID)
+func (tenantResolver) TenantKey(key fixture.TenantKey) uint64 {
+	return uint64(key.TenantID)
 }
 
-func (tenantResolver) MessageKey(userID, _ int64, _ bool) uint64 {
-	return uint64(userID)
+func (tenantResolver) MessageKey(key fixture.MessageKey) uint64 {
+	return uint64(key.UserID)
+}
+
+func tenantKey(tenantID int64) fixture.TenantKey {
+	return fixture.TenantKey{TenantID: tenantID}
 }
 
 type postgresHarness struct {
@@ -64,7 +68,7 @@ func (s *cachedUsersStore) GetUser(
 		return s.Users.GetUser(ctx, arg, options...)
 	}
 
-	key := cachedUserKey{tenantID: arg.TenantID, id: arg.ID}
+	key := cachedUserKey{tenantID: arg.TenantKey.TenantID, id: arg.ID}
 	s.mu.Lock()
 	user := s.users[key]
 	if user != nil {
@@ -95,7 +99,7 @@ func (s *cachedUsersStore) UpdateUserName(
 		return user, err
 	}
 
-	key := cachedUserKey{tenantID: arg.TenantID, id: arg.ID}
+	key := cachedUserKey{tenantID: arg.TenantKey.TenantID, id: arg.ID}
 	s.mu.Lock()
 	delete(s.users, key)
 	s.mu.Unlock()
@@ -238,7 +242,7 @@ func TestPostgresStoreFactoryIntegration(t *testing.T) {
 	assert.Same(t, firstUsers, queries.Users())
 	assert.NotSame(t, cachedUsers, firstUsers, "generated telemetry retains a stable facade")
 
-	arg := &fixture.GetUserParams{TenantID: 2, ID: 90}
+	arg := &fixture.GetUserT{TenantKey: tenantKey(2), ID: 90}
 	first, err := queries.Users().GetUser(t.Context(), arg)
 	require.NoError(t, err)
 	assert.Equal(t, "before", first.Name)
@@ -246,7 +250,7 @@ func TestPostgresStoreFactoryIntegration(t *testing.T) {
 
 	updated, err := queries.Users().UpdateUserName(
 		t.Context(),
-		&fixture.UpdateUserNameParams{TenantID: 2, ID: 90, Name: "after"},
+		&fixture.UpdateUserNameT{TenantKey: tenantKey(2), ID: 90, Name: "after"},
 	)
 	require.NoError(t, err)
 	assert.Equal(t, "after", updated.Name)
@@ -332,17 +336,17 @@ func TestPostgresTopologyIntegration(t *testing.T) {
 				h.insert(t, "shard0-replica1", 100, 2, "replica1")
 				h.insert(t, "shard1-primary", 101, 3, "shard1-primary")
 
-				first, err := h.queries.Users().GetUser(t.Context(), &fixture.GetUserParams{TenantID: 2, ID: 100})
+				first, err := h.queries.Users().GetUser(t.Context(), &fixture.GetUserT{TenantKey: tenantKey(2), ID: 100})
 				require.NoError(t, err)
-				second, err := h.queries.Users().GetUser(t.Context(), &fixture.GetUserParams{TenantID: 2, ID: 100})
+				second, err := h.queries.Users().GetUser(t.Context(), &fixture.GetUserT{TenantKey: tenantKey(2), ID: 100})
 				require.NoError(t, err)
 				strong, err := h.queries.Users().GetUser(
 					t.Context(),
-					&fixture.GetUserParams{TenantID: 2, ID: 100},
+					&fixture.GetUserT{TenantKey: tenantKey(2), ID: 100},
 					fixture.ReadFromPrimary(),
 				)
 				require.NoError(t, err)
-				fallback, err := h.queries.Users().GetUser(t.Context(), &fixture.GetUserParams{TenantID: 3, ID: 101})
+				fallback, err := h.queries.Users().GetUser(t.Context(), &fixture.GetUserT{TenantKey: tenantKey(3), ID: 101})
 				require.NoError(t, err)
 
 				assert.Equal(t, "replica0", first.Name)
@@ -374,23 +378,23 @@ func TestPostgresTopologyIntegration(t *testing.T) {
 
 				first, err := queries.Users().GetUser(
 					t.Context(),
-					&fixture.GetUserParams{TenantID: 2, ID: 150},
+					&fixture.GetUserT{TenantKey: tenantKey(2), ID: 150},
 				)
 				require.NoError(t, err)
 				second, err := queries.Users().GetUser(
 					t.Context(),
-					&fixture.GetUserParams{TenantID: 2, ID: 150},
+					&fixture.GetUserT{TenantKey: tenantKey(2), ID: 150},
 				)
 				require.NoError(t, err)
 				strong, err := queries.Users().GetUser(
 					t.Context(),
-					&fixture.GetUserParams{TenantID: 2, ID: 150},
+					&fixture.GetUserT{TenantKey: tenantKey(2), ID: 150},
 					fixture.ReadFromPrimary(),
 				)
 				require.NoError(t, err)
 				_, err = queries.Users().CreateUser(
 					t.Context(),
-					&fixture.CreateUserParams{ID: 151, TenantID: 2, Name: "mirrored"},
+					&fixture.CreateUserT{TenantKey: tenantKey(2), ID: 151, Name: "mirrored"},
 				)
 				require.NoError(t, err)
 
@@ -406,9 +410,9 @@ func TestPostgresTopologyIntegration(t *testing.T) {
 		{
 			name: "writes route by virtual shard and mirror only shard zero",
 			run: func(t *testing.T, h *postgresCase) {
-				_, err := h.queries.Users().CreateUser(t.Context(), &fixture.CreateUserParams{ID: 200, TenantID: 2, Name: "even"})
+				_, err := h.queries.Users().CreateUser(t.Context(), &fixture.CreateUserT{TenantKey: tenantKey(2), ID: 200, Name: "even"})
 				require.NoError(t, err)
-				_, err = h.queries.Users().CreateUser(t.Context(), &fixture.CreateUserParams{ID: 201, TenantID: 3, Name: "odd"})
+				_, err = h.queries.Users().CreateUser(t.Context(), &fixture.CreateUserT{TenantKey: tenantKey(3), ID: 201, Name: "odd"})
 				require.NoError(t, err)
 
 				assert.Equal(t, "even", h.userName(t, "shard0-primary", 200, 2))
@@ -423,10 +427,10 @@ func TestPostgresTopologyIntegration(t *testing.T) {
 		{
 			name: "grouped copy sends one physical batch per shard",
 			run: func(t *testing.T, h *postgresCase) {
-				count, err := h.queries.Users().CopyUsers(t.Context(), []*fixture.CopyUsersParams{
-					{ID: 250, TenantID: 2, Name: "even-two"},
-					{ID: 251, TenantID: 3, Name: "odd"},
-					{ID: 252, TenantID: 4, Name: "even-four"},
+				count, err := h.queries.Users().CopyUsers(t.Context(), []*fixture.CopyUsersT{
+					{TenantKey: tenantKey(2), ID: 250, Name: "even-two"},
+					{TenantKey: tenantKey(3), ID: 251, Name: "odd"},
+					{TenantKey: tenantKey(4), ID: 252, Name: "even-four"},
 				})
 				require.NoError(t, err)
 				assert.Equal(t, int64(3), count)
@@ -451,12 +455,12 @@ func TestPostgresTopologyIntegration(t *testing.T) {
 				users, err := h.queries.Users().ListUsersByIDs(
 					t.Context(),
 					[]*fixture.ListUsersByIDsT{
-						{ID: 243, TenantID: 5},
-						{ID: 240, TenantID: 2},
-						{ID: 299, TenantID: 3},
-						{ID: 241, TenantID: 3},
-						{ID: 242, TenantID: 4},
-						{ID: 240, TenantID: 2},
+						{TenantKey: tenantKey(5), ID: 243},
+						{TenantKey: tenantKey(2), ID: 240},
+						{TenantKey: tenantKey(3), ID: 299},
+						{TenantKey: tenantKey(3), ID: 241},
+						{TenantKey: tenantKey(4), ID: 242},
+						{TenantKey: tenantKey(2), ID: 240},
 					},
 					fixture.ReadFromPrimary(),
 				)
@@ -506,7 +510,7 @@ func TestPostgresTopologyIntegration(t *testing.T) {
 
 				user, err := h.queries.Users().CreateUser(
 					t.Context(),
-					&fixture.CreateUserParams{ID: 300, TenantID: 2, Name: "primary-result"},
+					&fixture.CreateUserT{TenantKey: tenantKey(2), ID: 300, Name: "primary-result"},
 				)
 				require.Error(t, err)
 				var pgErr *pgconn.PgError
@@ -525,7 +529,7 @@ func TestPostgresTopologyIntegration(t *testing.T) {
 
 				user, err := h.queries.Users().UpdateUserName(
 					t.Context(),
-					&fixture.UpdateUserNameParams{TenantID: 2, ID: 350, Name: "after"},
+					&fixture.UpdateUserNameT{TenantKey: tenantKey(2), ID: 350, Name: "after"},
 				)
 
 				require.NoError(t, err)
@@ -549,7 +553,7 @@ func TestPostgresTopologyIntegration(t *testing.T) {
 
 				populated, err := h.queries.Analyses().GetAnalysis(
 					t.Context(),
-					&fixture.GetAnalysisParams{TenantID: 2, ID: 360},
+					&fixture.GetAnalysisT{TenantKey: tenantKey(2), ID: 360},
 					fixture.ReadFromPrimary(),
 				)
 				require.NoError(t, err)
@@ -564,7 +568,7 @@ func TestPostgresTopologyIntegration(t *testing.T) {
 
 				nullable, err := h.queries.Analyses().GetAnalysis(
 					t.Context(),
-					&fixture.GetAnalysisParams{TenantID: 2, ID: 361},
+					&fixture.GetAnalysisT{TenantKey: tenantKey(2), ID: 361},
 					fixture.ReadFromPrimary(),
 				)
 				require.NoError(t, err)
@@ -583,16 +587,16 @@ func TestPostgresTopologyIntegration(t *testing.T) {
 
 				created, err := h.queries.Users().CreateUser(
 					t.Context(),
-					&fixture.CreateUserParams{ID: 400, TenantID: 2, Name: "transactional"},
+					&fixture.CreateUserT{TenantKey: tenantKey(2), ID: 400, Name: "transactional"},
 					fixture.WithTx(tx),
 				)
 				require.NoError(t, err)
 				assert.Equal(t, "transactional", created.Name)
 				copyCount, err := h.queries.Users().CopyUsers(
 					t.Context(),
-					[]*fixture.CopyUsersParams{
-						{ID: 401, TenantID: 2, Name: "copy-two"},
-						{ID: 402, TenantID: 4, Name: "copy-four"},
+					[]*fixture.CopyUsersT{
+						{TenantKey: tenantKey(2), ID: 401, Name: "copy-two"},
+						{TenantKey: tenantKey(4), ID: 402, Name: "copy-four"},
 					},
 					fixture.WithTx(tx),
 				)
@@ -600,7 +604,7 @@ func TestPostgresTopologyIntegration(t *testing.T) {
 				assert.Equal(t, int64(2), copyCount)
 				inside, err := h.queries.Users().GetUser(
 					t.Context(),
-					&fixture.GetUserParams{ID: 400, TenantID: 2},
+					&fixture.GetUserT{TenantKey: tenantKey(2), ID: 400},
 					fixture.WithTx(tx),
 				)
 				require.NoError(t, err)

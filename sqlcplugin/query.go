@@ -29,11 +29,15 @@ func querySpecs(req *plugin.GenerateRequest, opts *options) ([]generatedQuery, *
 		return nil, nil, err
 	}
 	for _, query := range queries {
-		if query.shardArgs == nil {
-			continue
+		if query.route != nil {
+			for _, operand := range query.route.operands {
+				resolver.addImportsForType(operand.typ)
+			}
 		}
-		for _, field := range query.shardArgs.fields {
-			resolver.addImportsForType(field.typ)
+		if query.shardArgs != nil {
+			for _, field := range query.shardArgs.fields {
+				resolver.addImportsForType(field.typ)
+			}
 		}
 	}
 	return queries, resolver.imports, nil
@@ -70,6 +74,7 @@ type storeGroup struct {
 type shardRoute struct {
 	name       string
 	methodName string
+	queryName  string
 	operands   []routeOperand
 }
 
@@ -88,21 +93,24 @@ type routeOperand struct {
 }
 
 type shardArgWrapper struct {
-	name    string
-	fields  []argument
-	sqlcArg queryValue
+	name                 string
+	shardKeyType         string
+	fields               []argument
+	sqlcArg              queryValue
+	sqlcFieldExpressions map[string]string
 }
 
 type groupedManySpec struct {
-	parameterDBName string
-	parameterField  string
-	lookupDBName    string
-	lookupField     string
-	elementType     string
-	resultKeyField  string
-	resultIsStruct  bool
-	resultKeyAccess groupedManyResultKeyAccess
-	itemIsPointer   bool
+	parameterDBName  string
+	parameterField   string
+	lookupDBName     string
+	lookupField      string
+	lookupExpression string
+	elementType      string
+	resultKeyField   string
+	resultIsStruct   bool
+	resultKeyAccess  groupedManyResultKeyAccess
+	itemIsPointer    bool
 }
 
 type groupedManyResultKeyAccess struct {
@@ -143,8 +151,12 @@ func collectShardRoutes(queries []generatedQuery) ([]shardRoute, error) {
 			}
 			if !sameRouteSignature(previous, *query.route) {
 				return nil, fmt.Errorf(
-					"shard route %s is reused with incompatible parameter types",
-					query.route.name,
+					"shard key %s is inconsistent between queries %s and %s: expected %s, got %s",
+					query.route.methodName,
+					previous.queryName,
+					query.route.queryName,
+					routeSignature(previous),
+					routeSignature(*query.route),
 				)
 			}
 			continue
@@ -176,6 +188,24 @@ func collectStoreGroups(queries []generatedQuery, opts *options) ([]storeGroup, 
 
 	declarations := generatedDeclarations(opts)
 
+	for _, query := range queries {
+		if query.route == nil {
+			continue
+		}
+		declaration := query.route.methodName
+		if previous, exists := declarations[declaration]; exists {
+			if previous == "shard key for route "+query.route.name {
+				continue
+			}
+			return nil, fmt.Errorf(
+				"shard route %s generates key type %s that conflicts with %s",
+				query.route.name,
+				declaration,
+				previous,
+			)
+		}
+		declarations[declaration] = "shard key for route " + query.route.name
+	}
 	for _, group := range groups {
 		for _, declaration := range []string{
 			group.name,
@@ -244,11 +274,21 @@ func sameRouteSignature(left, right shardRoute) bool {
 		return false
 	}
 	for index := range left.operands {
-		if left.operands[index].typ != right.operands[index].typ {
+		if left.operands[index].dbName != right.operands[index].dbName ||
+			left.operands[index].fieldName != right.operands[index].fieldName ||
+			left.operands[index].typ != right.operands[index].typ {
 			return false
 		}
 	}
 	return true
+}
+
+func routeSignature(route shardRoute) string {
+	fields := make([]string, len(route.operands))
+	for index, operand := range route.operands {
+		fields[index] = operand.fieldName + " " + operand.typ
+	}
+	return "(" + strings.Join(fields, ", ") + ")"
 }
 
 type queryKind string
@@ -604,7 +644,7 @@ func buildQueries(
 			groupedMany:     groupedMany,
 		})
 	}
-	if err := wrapQueriesWithExternalShardOperands(out, opts); err != nil {
+	if err := wrapRoutedQueryParameters(out, opts); err != nil {
 		return nil, err
 	}
 	aliasSQLCParamsForStore(out, opts)
@@ -675,15 +715,16 @@ func buildGroupedManySpec(
 	}
 
 	return &groupedManySpec{
-		parameterDBName: column.GetName(),
-		parameterField:  parameterField,
-		lookupDBName:    lookupDBName,
-		lookupField:     lookupField,
-		elementType:     elementType,
-		resultKeyField:  resultKeyField,
-		resultIsStruct:  resultIsStruct,
-		resultKeyAccess: resultKeyAccess,
-		itemIsPointer:   false,
+		parameterDBName:  column.GetName(),
+		parameterField:   parameterField,
+		lookupDBName:     lookupDBName,
+		lookupField:      lookupField,
+		lookupExpression: "",
+		elementType:      elementType,
+		resultKeyField:   resultKeyField,
+		resultIsStruct:   resultIsStruct,
+		resultKeyAccess:  resultKeyAccess,
+		itemIsPointer:    false,
 	}, nil
 }
 
@@ -1132,6 +1173,7 @@ func resolveShardRoute(
 	route := &shardRoute{
 		name:       annotation.name,
 		methodName: routeMethodName(annotation.name, opts),
+		queryName:  query.GetName(),
 		operands:   make([]routeOperand, 0, len(annotation.operands)),
 	}
 	if route.methodName == "" {
@@ -1353,31 +1395,20 @@ func modelsForTables(
 	return related
 }
 
-func wrapQueriesWithExternalShardOperands(queries []generatedQuery, opts *options) error {
+func wrapRoutedQueryParameters(queries []generatedQuery, opts *options) error {
 	for index := range queries {
 		query := &queries[index]
 		if query.route == nil {
 			continue
 		}
-		hasExternal := false
-		for _, operand := range query.route.operands {
-			if operand.external {
-				hasExternal = true
-				break
-			}
-		}
 		if query.shardMode == shardModeGroupedMany {
-			if hasExternal || query.arg.structType != nil {
-				if err := wrapGroupedManyShardOperands(query, opts); err != nil {
-					return err
-				}
+			if err := wrapGroupedManyShardOperands(query, opts); err != nil {
+				return err
 			}
 			continue
 		}
-		if hasExternal {
-			if err := wrapExternalShardOperands(query, opts); err != nil {
-				return err
-			}
+		if err := wrapShardParameters(query, opts); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -1418,11 +1449,15 @@ func aliasSQLCParamsForStore(queries []generatedQuery, opts *options) {
 func wrapGroupedManyShardOperands(query *generatedQuery, opts *options) error {
 	spec := query.groupedMany
 	wrapper := &shardArgWrapper{
-		name:    query.methodName + "T",
-		fields:  nil,
-		sqlcArg: queryValue{},
+		name:                 query.methodName + "T",
+		shardKeyType:         query.route.methodName,
+		fields:               nil,
+		sqlcArg:              queryValue{},
+		sqlcFieldExpressions: nil,
 	}
-	usedFields := make(map[string]string)
+	usedFields := map[string]string{
+		wrapper.shardKeyType: "shard key",
+	}
 	appendField := func(name, typ, source string) error {
 		if previous, exists := usedFields[name]; exists {
 			return fmt.Errorf(
@@ -1438,34 +1473,17 @@ func wrapGroupedManyShardOperands(query *generatedQuery, opts *options) error {
 		return nil
 	}
 
-	if err := appendField(
-		spec.lookupField,
-		spec.elementType,
-		"SQL list parameter "+spec.parameterDBName,
-	); err != nil {
-		return err
-	}
-	for operandIndex := range query.route.operands {
-		operand := &query.route.operands[operandIndex]
-		if operand.dbName == spec.parameterDBName && !operand.external {
-			operand.expression = "arg." + spec.lookupField
-			continue
-		}
-		if !operand.external {
-			return fmt.Errorf(
-				"query %s grouped :many shard operand %q is not its sole SQL list parameter",
-				query.methodName,
-				operand.dbName,
-			)
-		}
+	if operand, ok := routeOperandByDBName(query.route, spec.parameterDBName); ok {
+		spec.lookupExpression = "item." + wrapper.shardKeyType + "." + operand.fieldName
+	} else {
 		if err := appendField(
-			operand.fieldName,
-			operand.typ,
-			"shard operand "+operand.dbName,
+			spec.lookupField,
+			spec.elementType,
+			"SQL list parameter "+spec.parameterDBName,
 		); err != nil {
 			return err
 		}
-		operand.expression = "arg." + operand.fieldName
+		spec.lookupExpression = "item." + spec.lookupField
 	}
 
 	wrapperType := wrapper.name
@@ -1481,13 +1499,17 @@ func wrapGroupedManyShardOperands(query *generatedQuery, opts *options) error {
 	return nil
 }
 
-func wrapExternalShardOperands(query *generatedQuery, opts *options) error {
+func wrapShardParameters(query *generatedQuery, opts *options) error {
 	wrapper := &shardArgWrapper{
-		name:    query.methodName + "T",
-		fields:  nil,
-		sqlcArg: queryValue{},
+		name:                 query.methodName + "T",
+		shardKeyType:         query.route.methodName,
+		fields:               nil,
+		sqlcArg:              queryValue{},
+		sqlcFieldExpressions: nil,
 	}
-	usedFields := make(map[string]string)
+	usedFields := map[string]string{
+		wrapper.shardKeyType: "shard key",
+	}
 	appendField := func(name, typ, source string) error {
 		if previous, exists := usedFields[name]; exists {
 			return fmt.Errorf(
@@ -1508,50 +1530,55 @@ func wrapExternalShardOperands(query *generatedQuery, opts *options) error {
 	switch {
 	case arg.isEmpty():
 	case arg.emit:
+		wrapper.sqlcArg = arg
+		wrapper.sqlcFieldExpressions = make(map[string]string, len(arg.structType.fields))
 		for _, field := range arg.structType.fields {
+			if operand, ok := routeOperandByDBName(query.route, field.dbName); ok {
+				wrapper.sqlcFieldExpressions[field.name] = "arg." +
+					wrapper.shardKeyType + "." + operand.fieldName
+				continue
+			}
 			if err := appendField(field.name, field.typ, "SQL parameter "+field.dbName); err != nil {
 				return err
 			}
+			wrapper.sqlcFieldExpressions[field.name] = "arg." + field.name
 		}
-		wrapper.sqlcArg = arg
 		callArgs = append(callArgs, "arg.sqlcParams()")
 	case arg.structType != nil:
 		for _, field := range arg.structType.fields {
+			if operand, ok := routeOperandByDBName(query.route, field.dbName); ok {
+				callArgs = append(
+					callArgs,
+					"arg."+wrapper.shardKeyType+"."+operand.fieldName,
+				)
+				continue
+			}
 			if err := appendField(field.name, field.typ, "SQL parameter "+field.dbName); err != nil {
 				return err
 			}
 			callArgs = append(callArgs, "arg."+field.name)
 		}
 	default:
-		fieldName := structName(arg.dbName, opts)
-		if fieldName == "" {
-			fieldName = structName(arg.name, opts)
+		if operand, ok := routeOperandByDBName(query.route, arg.dbName); ok {
+			callArgs = append(
+				callArgs,
+				"arg."+wrapper.shardKeyType+"."+operand.fieldName,
+			)
+		} else {
+			fieldName := structName(arg.dbName, opts)
+			if fieldName == "" {
+				fieldName = structName(arg.name, opts)
+			}
+			if err := appendField(fieldName, arg.defineType(opts), "SQL parameter "+arg.dbName); err != nil {
+				return err
+			}
+			callArgs = append(callArgs, "arg."+fieldName)
 		}
-		if err := appendField(fieldName, arg.defineType(opts), "SQL parameter "+arg.dbName); err != nil {
-			return err
-		}
-		callArgs = append(callArgs, "arg."+fieldName)
 	}
 
 	for operandIndex := range query.route.operands {
 		operand := &query.route.operands[operandIndex]
-		if operand.external {
-			fieldName := operand.fieldName
-			if err := appendField(fieldName, operand.typ, "shard operand "+operand.dbName); err != nil {
-				return err
-			}
-			operand.expression = "arg." + fieldName
-			continue
-		}
-		expression, ok := wrappedRouteOperandExpression(arg, operand.dbName, opts)
-		if !ok {
-			return fmt.Errorf(
-				"query %s cannot wrap SQL parameter %q for shard routing",
-				query.methodName,
-				operand.dbName,
-			)
-		}
-		operand.expression = expression
+		operand.expression = "arg." + wrapper.shardKeyType + "." + operand.fieldName
 	}
 
 	wrapperType := wrapper.name
@@ -1570,24 +1597,20 @@ func wrapExternalShardOperands(query *generatedQuery, opts *options) error {
 	return nil
 }
 
-func wrappedRouteOperandExpression(arg queryValue, dbName string, opts *options) (string, bool) {
-	if arg.structType != nil {
-		for _, field := range arg.structType.fields {
-			if field.dbName != dbName {
-				continue
-			}
-			return "arg." + field.name, true
+func routeOperandByDBName(route *shardRoute, dbName string) (routeOperand, bool) {
+	for _, operand := range route.operands {
+		if operand.dbName == dbName {
+			return operand, true
 		}
-		return "", false
 	}
-	if arg.dbName != dbName {
-		return "", false
-	}
-	fieldName := structName(arg.dbName, opts)
-	if fieldName == "" {
-		fieldName = structName(arg.name, opts)
-	}
-	return "arg." + fieldName, true
+	return routeOperand{
+		name:       "",
+		typ:        "",
+		expression: "",
+		dbName:     "",
+		fieldName:  "",
+		external:   false,
+	}, false
 }
 
 func buildQueryReturn(

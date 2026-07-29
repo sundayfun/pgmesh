@@ -137,6 +137,9 @@ func validateSQLCTypeAliases(
 		declarations[storeFactoryOptionName(group.name)] = "store group " + group.name
 	}
 	for _, query := range queries {
+		if query.route != nil {
+			declarations[query.route.methodName] = "shard key for route " + query.route.name
+		}
 		if query.storeParamAlias != nil {
 			declarations[query.storeParamAlias.name] = "store parameter alias for " + query.methodName
 		}

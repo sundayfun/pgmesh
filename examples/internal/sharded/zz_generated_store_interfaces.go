@@ -34,8 +34,13 @@ var _ readQuerier = (*readQueries)(nil)
 var _ writeQuerier = (*writeQueries)(nil)
 var _ Querier = (*queryStore)(nil)
 
+// TenantKey is the shared shard key for the "tenantKey" route.
+type TenantKey struct {
+	TenantID int64
+}
+
 // ShardResolver resolves generated query parameters to shard keys.
 type ShardResolver[SK any] interface {
-	// Tenant resolves the "tenant" shard route.
-	Tenant(tenantID int64) SK
+	// TenantKey resolves the "tenantKey" shard route.
+	TenantKey(key TenantKey) SK
 }

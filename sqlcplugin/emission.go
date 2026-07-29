@@ -75,6 +75,7 @@ func generateWrapper(
 		writeSQLCTypeAliases(out, opts, aliases)
 		writeQueryInterfaces(out, opts, queries, groups)
 		if sharded {
+			writeShardKeyTypes(out, opts, routes)
 			writeShardResolverInterface(out, opts, routes)
 		}
 	}); err != nil {
@@ -367,6 +368,7 @@ func writeShardArgWrappers(out *bytes.Buffer, opts *options, queries []generated
 			query.methodName,
 		)
 		fmt.Fprintf(out, "type %s struct {\n", query.shardArgs.name)
+		fmt.Fprintf(out, "\t%s\n", query.shardArgs.shardKeyType)
 		for _, field := range query.shardArgs.fields {
 			fmt.Fprintf(out, "\t%s %s\n", field.name, exportedSQLCType(opts, field.typ))
 		}
@@ -396,7 +398,8 @@ func writeSQLCArgReconstructor(out *bytes.Buffer, opts *options, wrapper *shardA
 	}
 	fmt.Fprintf(out, "%s{\n", targetName(opts, wrapper.sqlcArg.structType.name))
 	for _, field := range wrapper.sqlcArg.structType.fields {
-		fmt.Fprintf(out, "\t\t%s: arg.%s,\n", field.name, field.name)
+		expression := wrapper.sqlcFieldExpressions[field.name]
+		fmt.Fprintf(out, "\t\t%s: %s,\n", field.name, expression)
 	}
 	out.WriteString("\t}\n")
 	out.WriteString("}\n\n")
@@ -861,16 +864,12 @@ func writeMeshStoreQueryMethod(out *bytes.Buffer, opts *options, query *generate
 	out.WriteString("\tvar shardKey SK\n")
 	if query.route != nil {
 		fmt.Fprintf(out, "\tif %s.resolver != nil {\n", store)
-		routeArgs := make([]string, 0, len(query.route.operands))
-		for _, operand := range query.route.operands {
-			routeArgs = append(routeArgs, operand.expression)
-		}
 		fmt.Fprintf(
 			out,
-			"\t\tshardKey = %s.resolver.%s(%s)\n",
+			"\t\tshardKey = %s.resolver.%s(arg.%s)\n",
 			store,
 			query.route.methodName,
-			strings.Join(routeArgs, ", "),
+			query.route.methodName,
 		)
 		out.WriteString("\t}\n")
 	}
@@ -1020,10 +1019,7 @@ func writeGroupedManyQueryMethod(
 		fmt.Fprintf(out, "\t\t\treturn %s\n", strings.Join(resultNames, ", "))
 		out.WriteString("\t\t}\n")
 	}
-	lookupExpression := "item"
-	if query.shardArgs != nil {
-		lookupExpression = "item." + spec.lookupField
-	}
+	lookupExpression := spec.lookupExpression
 	fmt.Fprintf(out, "\t\tlookupValue := %s\n", lookupExpression)
 	out.WriteString("\t\tlookupKey := any(lookupValue)\n")
 	out.WriteString("\t\tif lookupKey != nil && !reflect.ValueOf(lookupKey).Comparable() {\n")
@@ -1037,20 +1033,12 @@ func writeGroupedManyQueryMethod(
 	out.WriteString("\t\t}\n")
 	out.WriteString("\t\tvar shardKey SK\n")
 	fmt.Fprintf(out, "\t\tif %s.resolver != nil {\n", store)
-	routeArgs := make([]string, 0, len(query.route.operands))
-	for _, operand := range query.route.operands {
-		expression := strings.Replace(operand.expression, "arg.", "item.", 1)
-		if operand.dbName == spec.parameterDBName && !operand.external {
-			expression = lookupExpression
-		}
-		routeArgs = append(routeArgs, expression)
-	}
 	fmt.Fprintf(
 		out,
-		"\t\t\tshardKey = %s.resolver.%s(%s)\n",
+		"\t\t\tshardKey = %s.resolver.%s(item.%s)\n",
 		store,
 		query.route.methodName,
-		strings.Join(routeArgs, ", "),
+		query.route.methodName,
 	)
 	out.WriteString("\t\t}\n")
 	fmt.Fprintf(out, "\t\tshard, routeErr := %s.mesh.Shard(shardKey)\n", store)
@@ -1409,20 +1397,12 @@ func writeGroupedCopyQueryMethod(out *bytes.Buffer, query *generatedQuery) {
 	fmt.Fprintf(out, "\tfor inputIndex, item := range %s {\n", inputName)
 	out.WriteString("\t\tvar shardKey SK\n")
 	fmt.Fprintf(out, "\t\tif %s.resolver != nil {\n", store)
-	routeArgs := make([]string, 0, len(query.route.operands))
-	for _, operand := range query.route.operands {
-		expression := strings.Replace(operand.expression, "arg.", "item.", 1)
-		if query.shardArgs == nil && query.arg.structType == nil {
-			expression = "item"
-		}
-		routeArgs = append(routeArgs, expression)
-	}
 	fmt.Fprintf(
 		out,
-		"\t\t\tshardKey = %s.resolver.%s(%s)\n",
+		"\t\t\tshardKey = %s.resolver.%s(item.%s)\n",
 		store,
 		query.route.methodName,
-		strings.Join(routeArgs, ", "),
+		query.route.methodName,
 	)
 	out.WriteString("\t\t}\n")
 	fmt.Fprintf(out, "\t\tshard, routeErr := %s.mesh.Shard(shardKey)\n", store)
@@ -1444,10 +1424,14 @@ func writeGroupedCopyQueryMethod(out *bytes.Buffer, query *generatedQuery) {
 	)
 	out.WriteString("\t\t\tgroupsByName[shard.Name()] = shardGroup\n")
 	out.WriteString("\t\t}\n")
-	if query.shardArgs != nil {
-		out.WriteString("\t\tshardGroup.args = append(shardGroup.args, item.sqlcParams())\n")
-	} else {
+	switch {
+	case query.shardArgs == nil:
 		out.WriteString("\t\tshardGroup.args = append(shardGroup.args, item)\n")
+	case !query.shardArgs.sqlcArg.isEmpty():
+		out.WriteString("\t\tshardGroup.args = append(shardGroup.args, item.sqlcParams())\n")
+	default:
+		expression := strings.Replace(query.callArgs[1], "arg.", "item.", 1)
+		fmt.Fprintf(out, "\t\tshardGroup.args = append(shardGroup.args, %s)\n", expression)
 	}
 	out.WriteString("\t}\n\n")
 
@@ -1664,22 +1648,35 @@ func writeShardedStore(
 	out.WriteString("}\n\n")
 }
 
+func writeShardKeyTypes(out *bytes.Buffer, opts *options, routes []shardRoute) {
+	for _, route := range routes {
+		fmt.Fprintf(
+			out,
+			"// %s is the shared shard key for the %q route.\n",
+			route.methodName,
+			route.name,
+		)
+		fmt.Fprintf(out, "type %s struct {\n", route.methodName)
+		for _, operand := range route.operands {
+			fmt.Fprintf(
+				out,
+				"\t%s %s\n",
+				operand.fieldName,
+				exportedSQLCType(opts, operand.typ),
+			)
+		}
+		out.WriteString("}\n\n")
+	}
+}
+
 func writeShardResolverInterface(out *bytes.Buffer, opts *options, routes []shardRoute) {
 	fmt.Fprintf(out, "// %s resolves generated query parameters to shard keys.\n", opts.ResolverInterfaceName)
 	fmt.Fprintf(out, "type %s[SK any] interface {\n", opts.ResolverInterfaceName)
 	for _, route := range routes {
 		fmt.Fprintf(out, "\t// %s resolves the %q shard route.\n", route.methodName, route.name)
-		fmt.Fprintf(out, "\t%s(%s) SK\n", route.methodName, routeOperandsSignature(opts, route.operands))
+		fmt.Fprintf(out, "\t%s(key %s) SK\n", route.methodName, route.methodName)
 	}
 	out.WriteString("}\n\n")
-}
-
-func routeOperandsSignature(opts *options, operands []routeOperand) string {
-	parts := make([]string, 0, len(operands))
-	for _, operand := range operands {
-		parts = append(parts, operand.name+" "+exportedSQLCType(opts, operand.typ))
-	}
-	return strings.Join(parts, ", ")
 }
 
 func writeQueryMethods(
