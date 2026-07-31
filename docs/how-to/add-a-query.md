@@ -110,6 +110,9 @@ must produce compatible field names and Go types.
 
 ### Route list lookups by item
 
+For a focused grouped-lookup and scatter comparison, see
+[Use multi-shard queries](use-multi-shard-queries.md).
+
 A routed `:many` query with exactly one one-dimensional list parameter is
 automatically grouped by physical shard:
 
@@ -304,6 +307,9 @@ are present, and suppresses write mirrors when it succeeds.
 
 Every `:copyfrom` query also generates an asynchronous enqueue API and a
 per-query store option. Enable it when many goroutines submit small row sets:
+
+For the complete enqueue, explicit flush, shutdown, failure, and telemetry
+workflow, see [Use asynchronous COPY batching](use-async-copy-batching.md).
 
 ```go
 store, err := db.NewStore(

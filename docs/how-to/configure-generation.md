@@ -179,7 +179,7 @@ the exported params, rows, and models. Generation fails with an actionable
 error if an alias would collide with a generated pgmesh declaration.
 
 The checked-in
-[`tests/generate/separate_package/sqlc.yaml`](../../tests/generate/separate_package/sqlc.yaml)
+[`tests/separate_package/sqlc.yaml`](../../tests/separate_package/sqlc.yaml)
 builds the separate-package configuration and exercises these aliases.
 
 ## Migration from legacy options

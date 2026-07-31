@@ -527,6 +527,7 @@ func (m *Mesh[R, W, SK]) StartQuerySpan(
 	)
 }
 
+//nolint:spancheck // The generated caller ends the returned PhysicalQuerySpan.
 func startPhysicalQuerySpan(
 	ctx context.Context,
 	tracer trace.Tracer,
@@ -575,7 +576,6 @@ func startPhysicalQuerySpan(
 			slog.String("virtual_shard", strconv.FormatUint(route.VirtualShard, 10)),
 		)
 	}
-	//nolint:spancheck // The returned wrapper transfers ownership to the generated caller.
 	ctx, span := tracer.Start(
 		ctx,
 		"pgmesh.query.physical."+storeName+"."+queryName,

@@ -10,6 +10,8 @@ The documentation is organized by what you are trying to learn or accomplish.
   replica sets, endpoint selection, and the request-routing flow.
 - [Quickstart](quickstart.md) generates and runs a read/write-aware query package
   against one PostgreSQL database.
+- [Feature guide](features.md) maps each user-facing capability to its focused
+  guide and runnable example.
 - [How-to guides](how-to/README.md) provide focused procedures for extending a
   working application.
 - [Development and verification](development.md) covers the local toolchain,
@@ -18,6 +20,8 @@ The documentation is organized by what you are trying to learn or accomplish.
 ## How-to guides
 
 - [Add a query](how-to/add-a-query.md)
+- [Use asynchronous COPY batching](how-to/use-async-copy-batching.md)
+- [Use multi-shard queries](how-to/use-multi-shard-queries.md)
 - [Add sharding](how-to/add-sharding.md)
 - [Add read replicas](how-to/add-read-replicas.md)
 - [Expand shards with synchronous dual writes](how-to/add-write-mirrors.md)
@@ -28,11 +32,11 @@ The documentation is organized by what you are trying to learn or accomplish.
 
 ## Runnable examples
 
-The [`examples`](../examples) directory progresses from a single database to
-read replicas, virtual sharding, shard-expansion dual writes, and transactions.
-The independent cases under [`tests/generate`](../tests/generate) verify
-same-package, separate-package, and command-shape generation with both basic
-API checks and Docker-backed PostgreSQL tests.
+The [`examples`](../examples) directory progresses from core topologies to
+focused async COPY, cache-aside, and multi-shard-query workflows.
+Feature directories under [`tests`](../tests) contain focused Docker-backed
+PostgreSQL scenarios. The `same_package`, `separate_package`, and
+`command_shapes` directories also verify their corresponding generator layout.
 
 For query annotations and supported commands, see [Add a query](how-to/add-a-query.md).
 For plugin options and output layouts, see

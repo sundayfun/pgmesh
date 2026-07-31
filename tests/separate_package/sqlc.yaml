@@ -1,0 +1,40 @@
+version: "2"
+plugins:
+  - name: "pgmesh"
+    process:
+      cmd: "../../bin/sqlc-gen-store"
+
+sql:
+  - engine: "postgresql"
+    schema: "schema.sql"
+    queries: "queries.sql"
+    gen:
+      go:
+        package: "internal"
+        out: "internal"
+        sql_package: "pgx/v5"
+        emit_interface: true
+        query_parameter_limit: 1
+        emit_params_struct_pointers: true
+        emit_result_struct_pointers: true
+        emit_pointers_for_null_types: true
+        emit_pointers_for_null_enum_types: false
+        rename:
+          summary: "Description"
+    codegen:
+      - plugin: "pgmesh"
+        out: "store"
+        options:
+          package: "store"
+          output_file_name: "zz_generated_store.go"
+          internal_import_path: "github.com/sundayfun/pgmesh/tests/separate_package/internal"
+          internal_import_alias: "db"
+          export_sqlc_types: true
+          sql_package: "pgx/v5"
+          query_parameter_limit: 1
+          emit_params_struct_pointers: true
+          emit_result_struct_pointers: true
+          emit_pointers_for_null_types: true
+          emit_pointers_for_null_enum_types: false
+          rename:
+            summary: "Description"

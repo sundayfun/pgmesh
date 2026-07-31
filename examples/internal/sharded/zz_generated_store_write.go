@@ -50,6 +50,20 @@ func (q *writeQueries) mirror(fn func(*Queries) error) error {
 	return nil
 }
 
+// CopyAccounts executes the generated CopyAccounts query.
+func (q *writeQueries) CopyAccounts(ctx context.Context, arg []*CopyAccountsParams) (int64, error) {
+	rv0, err := q.main.CopyAccounts(ctx, arg)
+	if err != nil {
+		var zero0 int64
+		return zero0, err
+	}
+	mirrorErr := q.mirror(func(mirror *Queries) error {
+		_, err := mirror.CopyAccounts(ctx, arg)
+		return err
+	})
+	return rv0, mirrorErr
+}
+
 // UpdateAccountName executes the generated UpdateAccountName query.
 func (q *writeQueries) UpdateAccountName(ctx context.Context, arg *UpdateAccountNameParams) (*Account, error) {
 	rv0, err := q.main.UpdateAccountName(ctx, arg)

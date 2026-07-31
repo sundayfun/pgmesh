@@ -1,0 +1,53 @@
+x-postgres: &postgres
+  image: postgres:18
+  environment:
+    POSTGRES_USER: pgmesh
+    POSTGRES_PASSWORD: pgmesh
+    POSTGRES_DB: pgmesh
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U pgmesh -d pgmesh"]
+    interval: 1s
+    timeout: 3s
+    retries: 60
+  restart: "no"
+
+services:
+  shard0-primary:
+    <<: *postgres
+    ports:
+      - "${PGMESH_SHARD0_PRIMARY_PORT:-25432}:5432"
+    volumes:
+      - ${PGMESH_TEST_SCHEMA:-./same_package/schema.sql}:/docker-entrypoint-initdb.d/001-schema.sql:ro
+      - ../examples/sqlc/schema.sql:/docker-entrypoint-initdb.d/002-example-schema.sql:ro
+
+  shard0-replica0:
+    <<: *postgres
+    ports:
+      - "${PGMESH_SHARD0_REPLICA0_PORT:-25433}:5432"
+    volumes:
+      - ${PGMESH_TEST_SCHEMA:-./same_package/schema.sql}:/docker-entrypoint-initdb.d/001-schema.sql:ro
+      - ../examples/sqlc/schema.sql:/docker-entrypoint-initdb.d/002-example-schema.sql:ro
+
+  shard0-replica1:
+    <<: *postgres
+    ports:
+      - "${PGMESH_SHARD0_REPLICA1_PORT:-25434}:5432"
+    volumes:
+      - ${PGMESH_TEST_SCHEMA:-./same_package/schema.sql}:/docker-entrypoint-initdb.d/001-schema.sql:ro
+      - ../examples/sqlc/schema.sql:/docker-entrypoint-initdb.d/002-example-schema.sql:ro
+
+  shard1-primary:
+    <<: *postgres
+    ports:
+      - "${PGMESH_SHARD1_PRIMARY_PORT:-25435}:5432"
+    volumes:
+      - ${PGMESH_TEST_SCHEMA:-./same_package/schema.sql}:/docker-entrypoint-initdb.d/001-schema.sql:ro
+      - ../examples/sqlc/schema.sql:/docker-entrypoint-initdb.d/002-example-schema.sql:ro
+
+  shard0-mirror:
+    <<: *postgres
+    ports:
+      - "${PGMESH_SHARD0_MIRROR_PORT:-25436}:5432"
+    volumes:
+      - ${PGMESH_TEST_SCHEMA:-./same_package/schema.sql}:/docker-entrypoint-initdb.d/001-schema.sql:ro
+      - ../examples/sqlc/schema.sql:/docker-entrypoint-initdb.d/002-example-schema.sql:ro

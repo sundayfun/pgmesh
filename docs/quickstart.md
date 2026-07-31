@@ -176,7 +176,9 @@ sharded configuration does not change the `db.Store` query API.
 
 ## Next steps
 
+- [Choose a feature and runnable example](features.md)
 - [Add a query](how-to/add-a-query.md)
+- [Use asynchronous COPY batching](how-to/use-async-copy-batching.md)
 - [Add read replicas](how-to/add-read-replicas.md)
 - [Add sharding](how-to/add-sharding.md)
 - [Expand shards with synchronous dual writes](how-to/add-write-mirrors.md)

@@ -9,6 +9,10 @@ import (
 )
 
 type Querier interface {
+	// kind: write
+	// shard: tenantKey(tenant_id)
+	// store: Accounts
+	CopyAccounts(ctx context.Context, arg []*CopyAccountsParams) (int64, error)
 	// kind: read
 	// shard: tenantKey(tenant_id)
 	// store: Reports
@@ -17,6 +21,14 @@ type Querier interface {
 	// shard: tenantKey(tenant_id)
 	// store: Accounts
 	GetAccount(ctx context.Context, arg *GetAccountParams) (*Account, error)
+	// kind: read
+	// shard: tenantKey(tenant_id)
+	// store: Accounts
+	ListAccountsByIDs(ctx context.Context, ids []int64) ([]*Account, error)
+	// kind: read
+	// shard: all()
+	// store: Accounts
+	ListAllAccounts(ctx context.Context) ([]*Account, error)
 	// kind: write
 	// shard: tenantKey(tenant_id)
 	// store: Accounts

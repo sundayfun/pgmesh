@@ -85,3 +85,6 @@ and node. Debug logging follows the same layers through
 `pgmesh query wrapper completed`, `pgmesh logical query completed`, and
 `pgmesh physical query completed` records. Pass the received context unchanged
 when delegating so pgmesh can preserve the hierarchy.
+
+See the runnable [`06-cache-aside` example](../../examples/06-cache-aside) for
+a complete generated factory, cache miss/hit, and write-through update.
