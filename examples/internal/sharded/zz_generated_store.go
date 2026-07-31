@@ -84,6 +84,9 @@ type storeOptions struct {
 		Accounts func(Accounts) Accounts
 		Reports  func(Reports) Reports
 	}
+	copyBatching struct {
+		copyAccounts *pgmesh.CopyBatchConfig
+	}
 }
 
 // StoreOption customizes a generated store.
@@ -181,15 +184,43 @@ func NewStore(ctx context.Context, topology Topology, options ...StoreOption) (S
 }
 
 type meshStore[SK any] struct {
-	mesh     *pgmesh.Mesh[*readQueries, *queryStore, SK]
-	resolver ShardResolver[SK]
-	groups   struct {
+	mesh              *pgmesh.Mesh[*readQueries, *queryStore, SK]
+	resolver          ShardResolver[SK]
+	copyAccountsBatch *copyAccountsBatchState
+	groups            struct {
 		Accounts Accounts
 		Reports  Reports
 	}
 }
 
 var _ Store = (*meshStore[uint8])(nil)
+
+func (q *meshStore[SK]) initializeCopyBatchers(options storeOptions) error {
+	copyAccountsBatchConfig := pgmesh.CopyBatchConfig{}
+	copyAccountsBatchEnabled := false
+	if configured := options.copyBatching.copyAccounts; configured != nil {
+		copyAccountsBatchConfig = *configured
+		copyAccountsBatchEnabled = true
+	}
+	copyAccountsBatch := &copyAccountsBatchState{
+		enabled:  copyAccountsBatchEnabled,
+		batchers: make(map[string]*pgmesh.CopyBatcher[*CopyAccountsParams]),
+	}
+	for _, shard := range q.mesh.AllShards() {
+		route := shard.WriteRoute()
+		batcher, err := pgmesh.NewCopyBatcher[*CopyAccountsParams](copyAccountsBatchConfig, func(ctx context.Context, rows []*CopyAccountsParams) (count int64, queryErr error) {
+			queryCtx, physicalQuerySpan := q.mesh.StartQuerySpan(ctx, "Accounts", "CopyAccounts", pgmesh.QueryKindWrite, route.Metadata().WithoutVirtualShard(), pgmesh.RouteModePrimary)
+			defer func() { physicalQuerySpan.End(queryErr) }()
+			return route.Target.CopyAccounts(queryCtx, rows)
+		}, q.mesh.CopyBatchObserver("Accounts", "CopyAccounts", route.Metadata()))
+		if err != nil {
+			return fmt.Errorf("configure CopyAccounts copy batching: %w", err)
+		}
+		copyAccountsBatch.batchers[shard.Name()] = batcher
+	}
+	q.copyAccountsBatch = copyAccountsBatch
+	return nil
+}
 
 type groupedMeshStore[SK any] struct {
 	store *meshStore[SK]
@@ -251,6 +282,9 @@ func (c singletonTopology) buildStore(_ context.Context, options storeOptions) (
 		return nil, err
 	}
 	store := &meshStore[uint8]{mesh: mesh}
+	if err := store.initializeCopyBatchers(options); err != nil {
+		return nil, err
+	}
 	store.initializeGroups(options)
 	return store, nil
 }

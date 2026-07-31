@@ -313,6 +313,21 @@ func TestGenerateRejectsInvalidStoreGroups(t *testing.T) {
 		}
 		return &plugin.Query{Name: name, Cmd: ":exec", Comments: comments}
 	}
+	copyQuery := func(name, store string) *plugin.Query {
+		return &plugin.Query{
+			Name:     name,
+			Cmd:      ":copyfrom",
+			Comments: []string{"kind: write", "store: " + store},
+			Params: []*plugin.Parameter{{
+				Number: 1,
+				Column: &plugin.Column{
+					Name:    "id",
+					Type:    &plugin.Identifier{Schema: "pg_catalog", Name: "int8"},
+					NotNull: true,
+				},
+			}},
+		}
+	}
 
 	tests := []struct {
 		name    string
@@ -357,6 +372,22 @@ func TestGenerateRejectsInvalidStoreGroups(t *testing.T) {
 				return result
 			}(),
 			want: "conflicts with constructor",
+		},
+		{
+			name: "copy enqueue method",
+			request: request(
+				copyQuery("CopyUsers", "Users"),
+				query("EnqueueCopyUsers", "Users"),
+			),
+			want: "generates method EnqueueCopyUsers",
+		},
+		{
+			name: "copy batching option",
+			request: request(
+				copyQuery("CopyUsers", "Users"),
+				query("GetBatchingStatus", "WithCopyUsersBatching"),
+			),
+			want: "declaration WithCopyUsersBatching",
 		},
 	}
 
@@ -752,12 +783,14 @@ func TestGenerateShardRoutedFacade(t *testing.T) {
 		"defer func() { querySpan.End(err) }()",
 		"// Resolve the shard key for this topology.",
 		"// Apply options that can override the default route.",
-		"querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeRead)",
-		"querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeTransaction)",
-		"return shard.Read().ListP2PMessages(ctx, arg.sqlcParams())",
-		"return shard.Write().WithTx(options.tx).ListP2PMessages(ctx, arg.sqlcParams())",
-		"target := shard.Write()",
-		"querySpan.SetRoute(shard.VShardIndex(), shard.Name(), mode)",
+		"querySpan.SetRoute(pgmesh.RouteModeRead)",
+		"querySpan.SetRoute(pgmesh.RouteModeTransaction)",
+		"route := shard.ReadRoute()",
+		"return route.Target.ListP2PMessages(ctx, arg.sqlcParams())",
+		"route := shard.WriteRoute()",
+		"target := route.Target.WithTx(options.tx)",
+		"querySpan.SetRoute(mode)",
+		"querySpan.StartQuerySpan(ctx, route.Metadata(), mode)",
 		"return target.CreateP2PMessage(ctx, arg.sqlcParams())",
 	}
 	for _, check := range checks {
@@ -857,7 +890,7 @@ func TestGenerateWrapsRoutingOnlyShardOperand(t *testing.T) {
 	)
 	body := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListTenantUsers")
 	assert.Contains(t, body, "shardKey = q.store.resolver.Tenant(arg.Tenant)")
-	assert.Contains(t, body, "return shard.Read().ListTenantUsers(ctx, arg.sqlcParams())")
+	assert.Contains(t, body, "return route.Target.ListTenantUsers(ctx, arg.sqlcParams())")
 	assert.Contains(t, got, "ListTenantUsers(ctx context.Context, arg *ListTenantUsersParams) ([]int64, error)")
 	assert.Contains(t, got, "Tenant(key Tenant) SK")
 
@@ -914,17 +947,26 @@ func TestGenerateReusesRouteNamedShardKeyInRoutedParameters(t *testing.T) {
 		PluginOptions: []byte(`{
 			"package":"db",
 			"sql_package":"pgx/v5",
-			"query_parameter_limit":1
+			"query_parameter_limit":1,
+			"emit_json_tags":true
 		}`),
 	})
 	require.NoError(t, err)
 
 	got := generatedSource(response)
 	assert.Equal(t, 1, strings.Count(got, "type TenantKey struct {"))
-	assert.Contains(t, got, "type TenantKey struct {\n\tTenantID int64\n}")
+	assert.Contains(t, got, "type TenantKey struct {\n\tTenantID int64 `json:\"tenant_id\"`\n}")
 	assert.Contains(t, got, "TenantKey(key TenantKey) SK")
-	assert.Contains(t, got, "type GetTenantUserT struct {\n\tTenantKey\n\tID int64\n}")
-	assert.Contains(t, got, "type DeleteTenantUserT struct {\n\tTenantKey\n\tName string\n}")
+	assert.Contains(
+		t,
+		got,
+		"type GetTenantUserT struct {\n\tTenantKey\n\tID int64 `json:\"id\"`\n}",
+	)
+	assert.Contains(
+		t,
+		got,
+		"type DeleteTenantUserT struct {\n\tTenantKey\n\tName string `json:\"name\"`\n}",
+	)
 	assert.Equal(t, 2, strings.Count(got, "q.store.resolver.TenantKey(arg.TenantKey)"))
 	assert.Contains(t, got, "TenantID: arg.TenantKey.TenantID")
 }
@@ -1015,7 +1057,7 @@ func TestGenerateGroupsListValuedManyByPhysicalShard(t *testing.T) {
 	assert.Contains(t, body, "shardKey = q.store.resolver.Tenant(item.Tenant)")
 	assert.Contains(t, body, "groupsByName[shard.Name()]")
 	assert.Contains(t, body, "shardGroup.args = append(shardGroup.args, lookupValue)")
-	assert.Contains(t, body, "shardGroup.shard.Read().ListUsersByID(ctx, shardGroup.args)")
+	assert.Contains(t, body, "route.Target.ListUsersByID(queryCtx, shardGroup.args)")
 	assert.Contains(t, body, "resultKey := any(row.ID)")
 	assert.Contains(t, body, "rowsByGroup[orderedItem.shardName][orderedItem.key]")
 	assert.Contains(t, body, "pgmesh.ErrCrossShardTransaction")
@@ -1151,7 +1193,7 @@ func TestGenerateScalarizesGroupedManyResolverOperand(t *testing.T) {
 	assert.Contains(
 		t,
 		structBody,
-		"ListUsersByIDs(ctx, &ListUsersByIDsParams{Ids: shardGroup.args})",
+		"ListUsersByIDs(queryCtx, &ListUsersByIDsParams{Ids: shardGroup.args})",
 	)
 }
 
@@ -1296,10 +1338,10 @@ func TestGenerateLeavesOtherManyShapesSingleShardRouted(t *testing.T) {
 	assert.NotContains(t, got, "manyShardGroup")
 	tenantBody := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListTenantUsersByID")
 	assert.Contains(t, tenantBody, "shardKey = q.store.resolver.Tenant(arg.Tenant)")
-	assert.Contains(t, tenantBody, "return shard.Read().ListTenantUsersByID(ctx, arg.sqlcParams())")
+	assert.Contains(t, tenantBody, "return route.Target.ListTenantUsersByID(ctx, arg.sqlcParams())")
 	matrixBody := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListUsersByIDMatrix")
 	assert.Contains(t, matrixBody, "shardKey = q.store.resolver.User(arg.User)")
-	assert.Contains(t, matrixBody, "return shard.Read().ListUsersByIDMatrix(ctx, arg.User.ID)")
+	assert.Contains(t, matrixBody, "return route.Target.ListUsersByIDMatrix(ctx, arg.User.ID)")
 }
 
 func TestGenerateUsesRenamedModelFieldForRoutingOnlyShardOperand(t *testing.T) {
@@ -1346,7 +1388,7 @@ func TestGenerateUsesRenamedModelFieldForRoutingOnlyShardOperand(t *testing.T) {
 	assert.Contains(t, got, "GetShardUser(ctx context.Context, arg GetShardUserT, storeOptions ...QueryOption)")
 	body := generatedMethodBody(t, got, "groupedMeshStore[SK]", "GetShardUser")
 	assert.Contains(t, body, "shardKey = q.store.resolver.Tenant(arg.Tenant)")
-	assert.Contains(t, body, "return shard.Read().GetShardUser(ctx, arg.ID)")
+	assert.Contains(t, body, "return route.Target.GetShardUser(ctx, arg.ID)")
 	assert.Contains(t, got, "Tenant(key Tenant) SK")
 }
 
@@ -1398,7 +1440,7 @@ func TestGenerateAllowsCompatibleShardFieldsOnMultipleModels(t *testing.T) {
 	assert.Contains(t, got, "Tenant(key Tenant) SK")
 	body := generatedMethodBody(t, got, "groupedMeshStore[SK]", "ListMemberships")
 	assert.Contains(t, body, "shardKey = q.store.resolver.Tenant(arg.Tenant)")
-	assert.Contains(t, body, "return shard.Read().ListMemberships(ctx)")
+	assert.Contains(t, body, "return route.Target.ListMemberships(ctx)")
 }
 
 func TestGeneratePrioritizesResultModelsForShardFieldLookup(t *testing.T) {
@@ -1994,8 +2036,19 @@ func TestGenerateGroupedCopyWithRoutingOnlyOperand(t *testing.T) {
 	)
 	assert.Contains(t, got, "shardKey = q.store.resolver.Tenant(item.Tenant)")
 	assert.Contains(t, got, "shardGroup.args = append(shardGroup.args, item.sqlcParams())")
-	assert.Contains(t, got, "target.CopyUsers(ctx, shardGroup.args)")
+	assert.Contains(t, got, "target.CopyUsers(queryCtx, shardGroup.args)")
 	assert.Contains(t, got, `q.store.mesh.StartSpan(ctx, "Users", "CopyUsers", pgmesh.QueryKindWrite)`)
+	assert.Contains(t, got, "func WithCopyUsersBatching(config pgmesh.CopyBatchConfig) StoreOption")
+	assert.Contains(t, got, "EnqueueCopyUsers(ctx context.Context, arg []*CopyUsersT) *pgmesh.Future[int64]")
+	assert.Contains(t, got, "FlushCopyUsers(ctx context.Context) error")
+	assert.Contains(t, got, "future = shardGroup.batcher.Submit(acceptedContext, shardGroup.args)")
+	assert.Contains(t, got, "future = shardGroup.batcher.SubmitImmediate(acceptedContext, shardGroup.args)")
+	assert.Contains(t, got, "return route.Target.CopyUsers(queryCtx, rows)")
+	assert.Contains(
+		t,
+		got,
+		`q.mesh.CopyBatchObserver("Users", "CopyUsers", route.Metadata())`,
+	)
 	assert.NotContains(t, got, "WriteMirrorCount()")
 	assert.NotContains(t, got, "writeMirrorCount")
 }
@@ -2026,6 +2079,8 @@ func TestGenerateGroupedCopyWithScalarParameter(t *testing.T) {
 	assert.Contains(t, got, "shardKey = q.store.resolver.Entity(item.Entity)")
 	assert.Contains(t, got, "args  []int64")
 	assert.Contains(t, got, "shardGroup.args = append(shardGroup.args, item.Entity.ID)")
+	assert.Contains(t, got, "batchers map[string]*pgmesh.CopyBatcher[int64]")
+	assert.Contains(t, got, "EnqueueCopyIDs(ctx context.Context, arg []CopyIDsT) *pgmesh.Future[int64]")
 }
 
 func TestGenerateSupportsAllNodeLevelCommands(t *testing.T) {
@@ -2134,6 +2189,13 @@ func TestGenerateSupportsAllNodeLevelCommands(t *testing.T) {
 			assert.NotContains(t, telemetryBody, "StartSpan")
 		} else {
 			assert.Contains(t, telemetryBody, "StartStoreSpan")
+		}
+		if test.command == ":copyfrom" {
+			assert.Contains(t, got, "func WithQuery5Batching(config pgmesh.CopyBatchConfig) StoreOption")
+			assert.Contains(t, got, "EnqueueQuery5(ctx context.Context, id []int64) *pgmesh.Future[int64]")
+			assert.Contains(t, got, "FlushQuery5(ctx context.Context) error")
+			asyncBody := generatedMethodBody(t, got, "groupedMeshStore[SK]", "EnqueueQuery5")
+			assert.Contains(t, asyncBody, "groups := []*asyncCopyShardGroup{{shard: shard, args: id}}")
 		}
 	}
 }

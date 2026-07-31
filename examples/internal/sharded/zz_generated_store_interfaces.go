@@ -12,10 +12,16 @@ type readQuerier interface {
 	CountAccounts(ctx context.Context, tenantID int64) (int64, error)
 	// GetAccount executes the generated GetAccount query.
 	GetAccount(ctx context.Context, arg *GetAccountParams) (*Account, error)
+	// ListAccountsByIDs executes the generated ListAccountsByIDs query.
+	ListAccountsByIDs(ctx context.Context, ids []int64) ([]*Account, error)
+	// ListAllAccounts executes the generated ListAllAccounts query.
+	ListAllAccounts(ctx context.Context) ([]*Account, error)
 }
 
 // writeQuerier exposes generated write queries.
 type writeQuerier interface {
+	// CopyAccounts executes the generated CopyAccounts query.
+	CopyAccounts(ctx context.Context, arg []*CopyAccountsParams) (int64, error)
 	// UpdateAccountName executes the generated UpdateAccountName query.
 	UpdateAccountName(ctx context.Context, arg *UpdateAccountNameParams) (*Account, error)
 	// UpsertAccount executes the generated UpsertAccount query.

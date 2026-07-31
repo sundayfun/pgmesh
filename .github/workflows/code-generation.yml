@@ -26,7 +26,7 @@ jobs:
         case:
           - same_package
           - separate_package
-          - commands
+          - command_shapes
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -50,8 +50,8 @@ jobs:
       - name: Check for generated-code drift
         shell: bash
         run: |
-          git diff --exit-code -- "tests/generate/${{ matrix.case }}"
-          untracked="$(git ls-files --others --exclude-standard -- "tests/generate/${{ matrix.case }}")"
+          git diff --exit-code -- "tests/${{ matrix.case }}"
+          untracked="$(git ls-files --others --exclude-standard -- "tests/${{ matrix.case }}")"
           if [[ -n "$untracked" ]]; then
             echo "Generation produced untracked files:"
             echo "$untracked"

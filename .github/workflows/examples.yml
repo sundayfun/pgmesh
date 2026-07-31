@@ -45,7 +45,7 @@ jobs:
 
       - name: Collect Docker logs
         if: failure()
-        run: docker compose -p pgmesh-integration -f tests/integration/docker-compose.yaml logs --no-color > example-logs.txt
+        run: docker compose -p pgmesh-integration -f tests/docker-compose.yaml logs --no-color > example-logs.txt
 
       - name: Upload Docker logs
         if: failure()

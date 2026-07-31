@@ -110,6 +110,9 @@ must produce compatible field names and Go types.
 
 ### Route list lookups by item
 
+For a focused grouped-lookup and scatter comparison, see
+[Use multi-shard queries](use-multi-shard-queries.md).
+
 A routed `:many` query with exactly one one-dimensional list parameter is
 automatically grouped by physical shard:
 
@@ -299,6 +302,55 @@ method to return a zero count and a joined, replica-set-labeled error.
 `WithTx` is accepted only when every row resolves to one physical shard. It
 returns `pgmesh.ErrCrossShardTransaction` before writing when multiple shards
 are present, and suppresses write mirrors when it succeeds.
+
+### Coalesce concurrent copy calls
+
+Every `:copyfrom` query also generates an asynchronous enqueue API and a
+per-query store option. Enable it when many goroutines submit small row sets:
+
+For the complete enqueue, explicit flush, shutdown, failure, and telemetry
+workflow, see [Use asynchronous COPY batching](use-async-copy-batching.md).
+
+```go
+store, err := db.NewStore(
+    ctx,
+    topology,
+    db.WithCopyAccountsBatching(pgmesh.CopyBatchConfig{
+        BatchSize:    500,
+        FlushTimeout: 2 * time.Millisecond,
+    }),
+)
+
+future := store.Accounts().EnqueueCopyAccounts(ctx, rows)
+count, err := future.Await(ctx)
+```
+
+Concurrent submissions are coalesced only when they target the same generated
+query and physical replica set. Different replica sets flush independently.
+`BatchSize` limits rows per physical COPY; zero leaves timed batches unbounded.
+A zero `FlushTimeout` uses `pgmesh.DefaultCopyBatchFlushTimeout`, currently one
+millisecond. Negative settings make store construction fail.
+
+Enqueue preflights every route before accepting rows. Once accepted, the write
+continues even if the enqueue context or an `Await` context is canceled; a
+later `Await` can still retrieve the final result. Keep and await every future,
+do not mutate submitted rows until it resolves, or drain accepted work during
+shutdown and tests:
+
+```go
+if err := store.Accounts().FlushCopyAccounts(shutdownCtx); err != nil {
+    return err
+}
+```
+
+Without `WithCopyAccountsBatching`, enqueue still runs asynchronously but sends
+one ordinary physical COPY per shard group from that call. Async enqueue has no
+`QueryOption` and cannot join a transaction; use synchronous `CopyAccounts`
+with `WithTx` for transactional work. A submission split across batches or
+shards can be partially committed before a later fragment fails, even though
+its future returns a zero count with an error. Batching is in-memory and does
+not bound the total outstanding async backlog, so producers should await
+futures or apply their own admission control.
 
 Sharded `:batch*` methods remain unsupported because sqlc exposes their
 database errors later through batch-result callbacks. Keep those methods in an

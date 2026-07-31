@@ -9,6 +9,12 @@ import (
 	"context"
 )
 
+type CopyAccountsParams struct {
+	ID          int64
+	TenantID    int64
+	DisplayName string
+}
+
 const countAccounts = `-- name: CountAccounts :one
 SELECT COUNT(*)
 FROM accounts
@@ -44,6 +50,65 @@ func (q *Queries) GetAccount(ctx context.Context, arg *GetAccountParams) (*Accou
 	var i Account
 	err := row.Scan(&i.ID, &i.TenantID, &i.DisplayName)
 	return &i, err
+}
+
+const listAccountsByIDs = `-- name: ListAccountsByIDs :many
+SELECT id, tenant_id, display_name
+FROM accounts
+WHERE id = ANY($1::bigint[])
+ORDER BY id
+`
+
+// kind: read
+// shard: tenantKey(tenant_id)
+// store: Accounts
+func (q *Queries) ListAccountsByIDs(ctx context.Context, ids []int64) ([]*Account, error) {
+	rows, err := q.db.Query(ctx, listAccountsByIDs, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*Account
+	for rows.Next() {
+		var i Account
+		if err := rows.Scan(&i.ID, &i.TenantID, &i.DisplayName); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAllAccounts = `-- name: ListAllAccounts :many
+SELECT id, tenant_id, display_name
+FROM accounts
+ORDER BY id
+`
+
+// kind: read
+// shard: all()
+// store: Accounts
+func (q *Queries) ListAllAccounts(ctx context.Context) ([]*Account, error) {
+	rows, err := q.db.Query(ctx, listAllAccounts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*Account
+	for rows.Next() {
+		var i Account
+		if err := rows.Scan(&i.ID, &i.TenantID, &i.DisplayName); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updateAccountName = `-- name: UpdateAccountName :one

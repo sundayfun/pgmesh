@@ -6,6 +6,23 @@ SELECT id, tenant_id, display_name
 FROM accounts
 WHERE tenant_id = $1 AND id = $2;
 
+-- name: ListAccountsByIDs :many
+-- kind: read
+-- shard: tenantKey(tenant_id)
+-- store: Accounts
+SELECT id, tenant_id, display_name
+FROM accounts
+WHERE id = ANY(@ids::bigint[])
+ORDER BY id;
+
+-- name: ListAllAccounts :many
+-- kind: read
+-- shard: all()
+-- store: Accounts
+SELECT id, tenant_id, display_name
+FROM accounts
+ORDER BY id;
+
 -- name: UpdateAccountName :one
 -- kind: write
 -- shard: tenantKey(tenant_id)
@@ -25,6 +42,13 @@ ON CONFLICT (id) DO UPDATE
 SET tenant_id = EXCLUDED.tenant_id,
     display_name = EXCLUDED.display_name
 RETURNING id, tenant_id, display_name;
+
+-- name: CopyAccounts :copyfrom
+-- kind: write
+-- shard: tenantKey(tenant_id)
+-- store: Accounts
+INSERT INTO accounts (id, tenant_id, display_name)
+VALUES ($1, $2, $3);
 
 -- name: CountAccounts :one
 -- kind: read

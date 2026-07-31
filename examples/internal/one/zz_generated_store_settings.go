@@ -78,18 +78,28 @@ func (q *groupedMeshStore[SK]) GetSetting(ctx context.Context, key string, store
 	switch {
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeTransaction)
-		return shard.Write().WithTx(options.tx).GetSetting(ctx, key)
+		querySpan.SetRoute(pgmesh.RouteModeTransaction)
+		route := shard.WriteRoute()
+		target := route.Target.WithTx(options.tx)
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
+		defer func() { physicalQuerySpan.End(err) }()
+		return target.GetSetting(ctx, key)
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModePrimary)
-		return shard.Write().GetSetting(ctx, key)
+		querySpan.SetRoute(pgmesh.RouteModePrimary)
+		route := shard.WriteRoute()
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
+		defer func() { physicalQuerySpan.End(err) }()
+		return route.Target.GetSetting(ctx, key)
 
 	// Ordinary reads use the shard's replica route.
 	default:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeRead)
-		return shard.Read().GetSetting(ctx, key)
+		querySpan.SetRoute(pgmesh.RouteModeRead)
+		route := shard.ReadRoute()
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
+		defer func() { physicalQuerySpan.End(err) }()
+		return route.Target.GetSetting(ctx, key)
 	}
 }
 
@@ -110,7 +120,8 @@ func (q *groupedMeshStore[SK]) UpsertSetting(ctx context.Context, arg *UpsertSet
 	options := applyQueryOptions(storeOptions...)
 
 	// Select the primary write route, or the transaction when provided.
-	target := shard.Write()
+	route := shard.WriteRoute()
+	target := route.Target
 	mode := pgmesh.RouteModePrimary
 	if options.tx != nil {
 		target = target.WithTx(options.tx)
@@ -118,6 +129,8 @@ func (q *groupedMeshStore[SK]) UpsertSetting(ctx context.Context, arg *UpsertSet
 	}
 
 	// Execute the write after recording its resolved route.
-	querySpan.SetRoute(shard.VShardIndex(), shard.Name(), mode)
+	querySpan.SetRoute(mode)
+	ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), mode)
+	defer func() { physicalQuerySpan.End(err) }()
 	return target.UpsertSetting(ctx, arg)
 }

@@ -26,6 +26,14 @@ store, err := db.NewStore(
 - With no replicas, reads fall back to the primary.
 - `db.ReadFromPrimary()` routes a read to the primary.
 
+Replica selection is visible on every `pgmesh.query.physical.duration` data
+point. Group that metric by `pgmesh.shard.name` and `pgmesh.node.name` to get
+each replica's QPS and latency. Nodes are named by configuration order
+(`replica-0`, `replica-1`, and so on); explicit-primary and write routes use
+`primary`.
+See the [common PromQL queries](enable-opentelemetry.md#common-promql-queries)
+for copy-ready per-node throughput and latency examples.
+
 For example:
 
 ```go

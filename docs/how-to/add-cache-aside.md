@@ -71,13 +71,20 @@ The wrapper receives the normal generated interface rather than pgmesh's
 private routing implementation. Delegated calls retain replica, shard,
 transaction, mirror, telemetry, and logging behavior.
 
-The factory's `pgmesh.store.*` span and `pgmesh.store.duration` measurement
-include `pgmesh.store.internal_executed`. It is `false` when the wrapper returns
+The factory's `pgmesh.query.wrapper.*` span and
+`pgmesh.query.wrapper.duration` measurement
+include `pgmesh.wrapper.delegated`. It is `false` when the wrapper returns
 without invoking the generated internal store and `true` when it delegates. A
 conventional cache-aside wrapper can therefore treat `false` as a cache hit.
 
-On a miss, the generated internal store creates a child `pgmesh.query.*` span
-and records `pgmesh.query.duration` with the resolved physical route. Debug
-logging follows the same split through `pgmesh store completed` and
-`pgmesh query completed` records. Pass the received context unchanged when
-delegating so pgmesh can link the two layers.
+On a miss, the generated internal store creates a child
+`pgmesh.query.logical.*` span and one `pgmesh.query.physical.*` child per
+physical database execution. It records `pgmesh.query.logical.duration` for
+the logical call and `pgmesh.query.physical.duration` with the resolved shard
+and node. Debug logging follows the same layers through
+`pgmesh query wrapper completed`, `pgmesh logical query completed`, and
+`pgmesh physical query completed` records. Pass the received context unchanged
+when delegating so pgmesh can preserve the hierarchy.
+
+See the runnable [`06-cache-aside` example](../../examples/06-cache-aside) for
+a complete generated factory, cache miss/hit, and write-through update.

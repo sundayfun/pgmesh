@@ -65,6 +65,7 @@ sql:
 | `emit_pointers_for_null_types` | boolean | `false` | Matches sqlc pgx/v5 nullable pointer emission. |
 | `emit_pointers_for_null_enum_types` | boolean | inherits nullable pointer setting | Overrides nullable enum pointer emission. |
 | `emit_exact_table_names` | boolean | `false` | Matches sqlc's table-derived Go naming. |
+| `emit_json_tags` | boolean | `false` | Matches sqlc JSON tags on generated shard keys and routed `QueryNameT` parameter structs. |
 | `rename` | map of string to Go identifier | empty | Matches sqlc identifier renames. |
 | `overrides` | override list | empty | Matches sqlc database-type and column overrides. |
 
@@ -131,8 +132,8 @@ Repeated topology options append in call order. Common scalar store options,
 such as `WithLogger` and `With<Group>Factory`, use the last supplied value.
 Group factories run once after successful topology construction, and a nil
 factory leaves that group unwrapped. A configured group is retained behind a
-generated telemetry facade that records `pgmesh.store.duration`, emits a
-`pgmesh.store.*` span, and reports `pgmesh.store.internal_executed`.
+generated telemetry facade that records `pgmesh.query.wrapper.duration`, emits a
+`pgmesh.query.wrapper.*` span, and reports `pgmesh.wrapper.delegated`.
 Option constructors clone slice inputs, and `NewStore` reports nil topology,
 singleton, sharded, or store options as configuration errors.
 
@@ -178,7 +179,7 @@ the exported params, rows, and models. Generation fails with an actionable
 error if an alias would collide with a generated pgmesh declaration.
 
 The checked-in
-[`tests/generate/separate_package/sqlc.yaml`](../../tests/generate/separate_package/sqlc.yaml)
+[`tests/separate_package/sqlc.yaml`](../../tests/separate_package/sqlc.yaml)
 builds the separate-package configuration and exercises these aliases.
 
 ## Migration from legacy options

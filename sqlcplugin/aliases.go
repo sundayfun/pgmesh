@@ -137,6 +137,9 @@ func validateSQLCTypeAliases(
 		declarations[storeFactoryOptionName(group.name)] = "store group " + group.name
 	}
 	for _, query := range queries {
+		if query.command == cmdCopyFrom {
+			declarations[copyBatchOptionName(query.methodName)] = "copy batch option for " + query.methodName
+		}
 		if query.route != nil {
 			declarations[query.route.methodName] = "shard key for route " + query.route.name
 		}

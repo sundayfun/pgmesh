@@ -6,6 +6,8 @@ working package. If not, begin with the [quickstart](../quickstart.md).
 ## Change generated queries
 
 - [Add a query](add-a-query.md)
+- [Use asynchronous COPY batching](use-async-copy-batching.md)
+- [Use multi-shard queries](use-multi-shard-queries.md)
 - [Configure and regenerate code](configure-generation.md)
 
 ## Change routing topology

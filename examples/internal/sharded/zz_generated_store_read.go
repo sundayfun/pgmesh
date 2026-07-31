@@ -40,3 +40,23 @@ func (q *readQueries) GetAccount(ctx context.Context, arg *GetAccountParams) (*A
 	}
 	return rv0, nil
 }
+
+// ListAccountsByIDs executes the generated ListAccountsByIDs query.
+func (q *readQueries) ListAccountsByIDs(ctx context.Context, ids []int64) ([]*Account, error) {
+	rv0, err := q.main.ListAccountsByIDs(ctx, ids)
+	if err != nil {
+		var zero0 []*Account
+		return zero0, err
+	}
+	return rv0, nil
+}
+
+// ListAllAccounts executes the generated ListAllAccounts query.
+func (q *readQueries) ListAllAccounts(ctx context.Context) ([]*Account, error) {
+	rv0, err := q.main.ListAllAccounts(ctx)
+	if err != nil {
+		var zero0 []*Account
+		return zero0, err
+	}
+	return rv0, nil
+}
