@@ -159,15 +159,19 @@ func (q *groupedMeshStore[SK]) BatchGetCommandUser(ctx context.Context, id []int
 	switch {
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
-		return shard.Write().WithTx(options.tx).BatchGetCommandUser(ctx, id)
+		route := shard.WriteRoute()
+		target := route.Target.WithTx(options.tx)
+		return target.BatchGetCommandUser(ctx, id)
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
-		return shard.Write().BatchGetCommandUser(ctx, id)
+		route := shard.WriteRoute()
+		return route.Target.BatchGetCommandUser(ctx, id)
 
 	// Ordinary reads use the shard's replica route.
 	default:
-		return shard.Read().BatchGetCommandUser(ctx, id)
+		route := shard.ReadRoute()
+		return route.Target.BatchGetCommandUser(ctx, id)
 	}
 }
 
@@ -181,7 +185,8 @@ func (q *groupedMeshStore[SK]) BatchInsertCommandUsers(ctx context.Context, arg 
 	options := applyQueryOptions(storeOptions...)
 
 	// Select the primary write route, or the transaction when provided.
-	target := shard.Write()
+	route := shard.WriteRoute()
+	target := route.Target
 	if options.tx != nil {
 		target = target.WithTx(options.tx)
 	}
@@ -202,15 +207,19 @@ func (q *groupedMeshStore[SK]) BatchListCommandUsersByTenant(ctx context.Context
 	switch {
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
-		return shard.Write().WithTx(options.tx).BatchListCommandUsersByTenant(ctx, tenantID)
+		route := shard.WriteRoute()
+		target := route.Target.WithTx(options.tx)
+		return target.BatchListCommandUsersByTenant(ctx, tenantID)
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
-		return shard.Write().BatchListCommandUsersByTenant(ctx, tenantID)
+		route := shard.WriteRoute()
+		return route.Target.BatchListCommandUsersByTenant(ctx, tenantID)
 
 	// Ordinary reads use the shard's replica route.
 	default:
-		return shard.Read().BatchListCommandUsersByTenant(ctx, tenantID)
+		route := shard.ReadRoute()
+		return route.Target.BatchListCommandUsersByTenant(ctx, tenantID)
 	}
 }
 
@@ -231,7 +240,8 @@ func (q *groupedMeshStore[SK]) CopyCommandUsers(ctx context.Context, arg []*Copy
 	options := applyQueryOptions(storeOptions...)
 
 	// Select the primary write route, or the transaction when provided.
-	target := shard.Write()
+	route := shard.WriteRoute()
+	target := route.Target
 	mode := pgmesh.RouteModePrimary
 	if options.tx != nil {
 		target = target.WithTx(options.tx)
@@ -239,7 +249,9 @@ func (q *groupedMeshStore[SK]) CopyCommandUsers(ctx context.Context, arg []*Copy
 	}
 
 	// Execute the write after recording its resolved route.
-	querySpan.SetRoute(shard.VShardIndex(), shard.Name(), mode)
+	querySpan.SetRoute(mode)
+	ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), mode)
+	defer func() { physicalQuerySpan.End(err) }()
 	return target.CopyCommandUsers(ctx, arg)
 }
 
@@ -265,7 +277,7 @@ func (q *groupedMeshStore[SK]) EnqueueCopyCommandUsers(ctx context.Context, arg 
 		return finish(pgmesh.ResolvedFuture[int64](0, routeErr))
 	}
 	groups := []*asyncCopyShardGroup{{shard: shard, args: arg}}
-	querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModePrimary)
+	querySpan.SetRoute(pgmesh.RouteModePrimary)
 	if len(groups) == 0 {
 		return finish(pgmesh.ResolvedFuture[int64](0, nil))
 	}
@@ -363,7 +375,8 @@ func (q *groupedMeshStore[SK]) DeleteCommandUser(ctx context.Context, id int64, 
 	options := applyQueryOptions(storeOptions...)
 
 	// Select the primary write route, or the transaction when provided.
-	target := shard.Write()
+	route := shard.WriteRoute()
+	target := route.Target
 	mode := pgmesh.RouteModePrimary
 	if options.tx != nil {
 		target = target.WithTx(options.tx)
@@ -371,7 +384,9 @@ func (q *groupedMeshStore[SK]) DeleteCommandUser(ctx context.Context, id int64, 
 	}
 
 	// Execute the write after recording its resolved route.
-	querySpan.SetRoute(shard.VShardIndex(), shard.Name(), mode)
+	querySpan.SetRoute(mode)
+	ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), mode)
+	defer func() { physicalQuerySpan.End(err) }()
 	return target.DeleteCommandUser(ctx, id)
 }
 
@@ -392,7 +407,8 @@ func (q *groupedMeshStore[SK]) DeleteCommandUsersByTenant(ctx context.Context, t
 	options := applyQueryOptions(storeOptions...)
 
 	// Select the primary write route, or the transaction when provided.
-	target := shard.Write()
+	route := shard.WriteRoute()
+	target := route.Target
 	mode := pgmesh.RouteModePrimary
 	if options.tx != nil {
 		target = target.WithTx(options.tx)
@@ -400,7 +416,9 @@ func (q *groupedMeshStore[SK]) DeleteCommandUsersByTenant(ctx context.Context, t
 	}
 
 	// Execute the write after recording its resolved route.
-	querySpan.SetRoute(shard.VShardIndex(), shard.Name(), mode)
+	querySpan.SetRoute(mode)
+	ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), mode)
+	defer func() { physicalQuerySpan.End(err) }()
 	return target.DeleteCommandUsersByTenant(ctx, tenantID)
 }
 
@@ -423,18 +441,28 @@ func (q *groupedMeshStore[SK]) GetCommandUser(ctx context.Context, id int64, sto
 	switch {
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeTransaction)
-		return shard.Write().WithTx(options.tx).GetCommandUser(ctx, id)
+		querySpan.SetRoute(pgmesh.RouteModeTransaction)
+		route := shard.WriteRoute()
+		target := route.Target.WithTx(options.tx)
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
+		defer func() { physicalQuerySpan.End(err) }()
+		return target.GetCommandUser(ctx, id)
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModePrimary)
-		return shard.Write().GetCommandUser(ctx, id)
+		querySpan.SetRoute(pgmesh.RouteModePrimary)
+		route := shard.WriteRoute()
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
+		defer func() { physicalQuerySpan.End(err) }()
+		return route.Target.GetCommandUser(ctx, id)
 
 	// Ordinary reads use the shard's replica route.
 	default:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeRead)
-		return shard.Read().GetCommandUser(ctx, id)
+		querySpan.SetRoute(pgmesh.RouteModeRead)
+		route := shard.ReadRoute()
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
+		defer func() { physicalQuerySpan.End(err) }()
+		return route.Target.GetCommandUser(ctx, id)
 	}
 }
 
@@ -457,18 +485,28 @@ func (q *groupedMeshStore[SK]) ListCommandUsers(ctx context.Context, storeOption
 	switch {
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeTransaction)
-		return shard.Write().WithTx(options.tx).ListCommandUsers(ctx)
+		querySpan.SetRoute(pgmesh.RouteModeTransaction)
+		route := shard.WriteRoute()
+		target := route.Target.WithTx(options.tx)
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
+		defer func() { physicalQuerySpan.End(err) }()
+		return target.ListCommandUsers(ctx)
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModePrimary)
-		return shard.Write().ListCommandUsers(ctx)
+		querySpan.SetRoute(pgmesh.RouteModePrimary)
+		route := shard.WriteRoute()
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
+		defer func() { physicalQuerySpan.End(err) }()
+		return route.Target.ListCommandUsers(ctx)
 
 	// Ordinary reads use the shard's replica route.
 	default:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeRead)
-		return shard.Read().ListCommandUsers(ctx)
+		querySpan.SetRoute(pgmesh.RouteModeRead)
+		route := shard.ReadRoute()
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
+		defer func() { physicalQuerySpan.End(err) }()
+		return route.Target.ListCommandUsers(ctx)
 	}
 }
 
@@ -489,7 +527,8 @@ func (q *groupedMeshStore[SK]) TouchCommandUser(ctx context.Context, id int64, s
 	options := applyQueryOptions(storeOptions...)
 
 	// Select the primary write route, or the transaction when provided.
-	target := shard.Write()
+	route := shard.WriteRoute()
+	target := route.Target
 	mode := pgmesh.RouteModePrimary
 	if options.tx != nil {
 		target = target.WithTx(options.tx)
@@ -497,6 +536,8 @@ func (q *groupedMeshStore[SK]) TouchCommandUser(ctx context.Context, id int64, s
 	}
 
 	// Execute the write after recording its resolved route.
-	querySpan.SetRoute(shard.VShardIndex(), shard.Name(), mode)
+	querySpan.SetRoute(mode)
+	ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), mode)
+	defer func() { physicalQuerySpan.End(err) }()
 	return target.TouchCommandUser(ctx, id)
 }

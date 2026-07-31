@@ -306,7 +306,7 @@ func TestPostgresStoreFactoryIntegration(t *testing.T) {
 		require.True(t, ok)
 		internalExecutions = append(internalExecutions, executed)
 		if !executed {
-			assert.NotContains(t, attributes, pgmesh.AttributeReplicaSet)
+			assert.NotContains(t, attributes, pgmesh.AttributeShardName)
 			assert.NotContains(t, attributes, pgmesh.AttributeRouteMode)
 		}
 	}

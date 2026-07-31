@@ -205,9 +205,12 @@ func (q *meshStore[SK]) initializeCopyBatchers(options storeOptions) error {
 		batchers: make(map[string]*pgmesh.CopyBatcher[*db.CopyCommandUsersParams]),
 	}
 	for _, shard := range q.mesh.AllShards() {
-		batcher, err := pgmesh.NewCopyBatcher[*db.CopyCommandUsersParams](copyCommandUsersBatchConfig, func(ctx context.Context, rows []*db.CopyCommandUsersParams) (int64, error) {
-			return shard.Write().CopyCommandUsers(ctx, rows)
-		}, q.mesh.CopyBatchObserver("Commands", "CopyCommandUsers", shard.Name()))
+		route := shard.WriteRoute()
+		batcher, err := pgmesh.NewCopyBatcher[*db.CopyCommandUsersParams](copyCommandUsersBatchConfig, func(ctx context.Context, rows []*db.CopyCommandUsersParams) (count int64, queryErr error) {
+			queryCtx, physicalQuerySpan := q.mesh.StartQuerySpan(ctx, "Commands", "CopyCommandUsers", pgmesh.QueryKindWrite, route.Metadata().WithoutVirtualShard(), pgmesh.RouteModePrimary)
+			defer func() { physicalQuerySpan.End(queryErr) }()
+			return route.Target.CopyCommandUsers(queryCtx, rows)
+		}, q.mesh.CopyBatchObserver("Commands", "CopyCommandUsers", route.Metadata()))
 		if err != nil {
 			return fmt.Errorf("configure CopyCommandUsers copy batching: %w", err)
 		}

@@ -118,18 +118,28 @@ func (q *groupedMeshStore[SK]) ListP2PMessageIDsByChat(ctx context.Context, arg 
 	switch {
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeTransaction)
-		return shard.Write().WithTx(options.tx).ListP2PMessageIDsByChat(ctx, arg.sqlcParams())
+		querySpan.SetRoute(pgmesh.RouteModeTransaction)
+		route := shard.WriteRoute()
+		target := route.Target.WithTx(options.tx)
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
+		defer func() { physicalQuerySpan.End(err) }()
+		return target.ListP2PMessageIDsByChat(ctx, arg.sqlcParams())
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModePrimary)
-		return shard.Write().ListP2PMessageIDsByChat(ctx, arg.sqlcParams())
+		querySpan.SetRoute(pgmesh.RouteModePrimary)
+		route := shard.WriteRoute()
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
+		defer func() { physicalQuerySpan.End(err) }()
+		return route.Target.ListP2PMessageIDsByChat(ctx, arg.sqlcParams())
 
 	// Ordinary reads use the shard's replica route.
 	default:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeRead)
-		return shard.Read().ListP2PMessageIDsByChat(ctx, arg.sqlcParams())
+		querySpan.SetRoute(pgmesh.RouteModeRead)
+		route := shard.ReadRoute()
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
+		defer func() { physicalQuerySpan.End(err) }()
+		return route.Target.ListP2PMessageIDsByChat(ctx, arg.sqlcParams())
 	}
 }
 
@@ -155,17 +165,27 @@ func (q *groupedMeshStore[SK]) ListP2PMessagesByChat(ctx context.Context, arg *L
 	switch {
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeTransaction)
-		return shard.Write().WithTx(options.tx).ListP2PMessagesByChat(ctx, arg.sqlcParams())
+		querySpan.SetRoute(pgmesh.RouteModeTransaction)
+		route := shard.WriteRoute()
+		target := route.Target.WithTx(options.tx)
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
+		defer func() { physicalQuerySpan.End(err) }()
+		return target.ListP2PMessagesByChat(ctx, arg.sqlcParams())
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModePrimary)
-		return shard.Write().ListP2PMessagesByChat(ctx, arg.sqlcParams())
+		querySpan.SetRoute(pgmesh.RouteModePrimary)
+		route := shard.WriteRoute()
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
+		defer func() { physicalQuerySpan.End(err) }()
+		return route.Target.ListP2PMessagesByChat(ctx, arg.sqlcParams())
 
 	// Ordinary reads use the shard's replica route.
 	default:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeRead)
-		return shard.Read().ListP2PMessagesByChat(ctx, arg.sqlcParams())
+		querySpan.SetRoute(pgmesh.RouteModeRead)
+		route := shard.ReadRoute()
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
+		defer func() { physicalQuerySpan.End(err) }()
+		return route.Target.ListP2PMessagesByChat(ctx, arg.sqlcParams())
 	}
 }

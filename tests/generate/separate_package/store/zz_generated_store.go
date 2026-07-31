@@ -210,9 +210,12 @@ func (q *meshStore[SK]) initializeCopyBatchers(options storeOptions) error {
 		batchers: make(map[string]*pgmesh.CopyBatcher[*db.CopyUsersParams]),
 	}
 	for _, shard := range q.mesh.AllShards() {
-		batcher, err := pgmesh.NewCopyBatcher[*db.CopyUsersParams](copyUsersBatchConfig, func(ctx context.Context, rows []*db.CopyUsersParams) (int64, error) {
-			return shard.Write().CopyUsers(ctx, rows)
-		}, q.mesh.CopyBatchObserver("Users", "CopyUsers", shard.Name()))
+		route := shard.WriteRoute()
+		batcher, err := pgmesh.NewCopyBatcher[*db.CopyUsersParams](copyUsersBatchConfig, func(ctx context.Context, rows []*db.CopyUsersParams) (count int64, queryErr error) {
+			queryCtx, physicalQuerySpan := q.mesh.StartQuerySpan(ctx, "Users", "CopyUsers", pgmesh.QueryKindWrite, route.Metadata().WithoutVirtualShard(), pgmesh.RouteModePrimary)
+			defer func() { physicalQuerySpan.End(queryErr) }()
+			return route.Target.CopyUsers(queryCtx, rows)
+		}, q.mesh.CopyBatchObserver("Users", "CopyUsers", route.Metadata()))
 		if err != nil {
 			return fmt.Errorf("configure CopyUsers copy batching: %w", err)
 		}

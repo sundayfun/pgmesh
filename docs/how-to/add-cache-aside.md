@@ -76,8 +76,10 @@ include `pgmesh.store.internal_executed`. It is `false` when the wrapper returns
 without invoking the generated internal store and `true` when it delegates. A
 conventional cache-aside wrapper can therefore treat `false` as a cache hit.
 
-On a miss, the generated internal store creates a child `pgmesh.query.*` span
-and records `pgmesh.query.duration` with the resolved physical route. Debug
-logging follows the same split through `pgmesh store completed` and
+On a miss, the generated internal store creates a child `pgmesh.operation.*`
+span and one `pgmesh.query.*` child per physical database execution. It records
+`pgmesh.operation.duration` for the logical call and `pgmesh.query.duration`
+with the resolved shard and node. Debug logging follows the same layers through
+`pgmesh store completed`, `pgmesh operation completed`, and
 `pgmesh query completed` records. Pass the received context unchanged when
-delegating so pgmesh can link the two layers.
+delegating so pgmesh can preserve the hierarchy.

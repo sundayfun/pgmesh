@@ -105,18 +105,28 @@ func (q *groupedMeshStore[SK]) GetAnalysis(ctx context.Context, arg *GetAnalysis
 	switch {
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeTransaction)
-		return shard.Write().WithTx(options.tx).GetAnalysis(ctx, arg.sqlcParams())
+		querySpan.SetRoute(pgmesh.RouteModeTransaction)
+		route := shard.WriteRoute()
+		target := route.Target.WithTx(options.tx)
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
+		defer func() { physicalQuerySpan.End(err) }()
+		return target.GetAnalysis(ctx, arg.sqlcParams())
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModePrimary)
-		return shard.Write().GetAnalysis(ctx, arg.sqlcParams())
+		querySpan.SetRoute(pgmesh.RouteModePrimary)
+		route := shard.WriteRoute()
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
+		defer func() { physicalQuerySpan.End(err) }()
+		return route.Target.GetAnalysis(ctx, arg.sqlcParams())
 
 	// Ordinary reads use the shard's replica route.
 	default:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeRead)
-		return shard.Read().GetAnalysis(ctx, arg.sqlcParams())
+		querySpan.SetRoute(pgmesh.RouteModeRead)
+		route := shard.ReadRoute()
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
+		defer func() { physicalQuerySpan.End(err) }()
+		return route.Target.GetAnalysis(ctx, arg.sqlcParams())
 	}
 }
 
@@ -142,17 +152,27 @@ func (q *groupedMeshStore[SK]) GetTenantUserAnalysis(ctx context.Context, arg *G
 	switch {
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeTransaction)
-		return shard.Write().WithTx(options.tx).GetTenantUserAnalysis(ctx, arg.sqlcParams())
+		querySpan.SetRoute(pgmesh.RouteModeTransaction)
+		route := shard.WriteRoute()
+		target := route.Target.WithTx(options.tx)
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
+		defer func() { physicalQuerySpan.End(err) }()
+		return target.GetTenantUserAnalysis(ctx, arg.sqlcParams())
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModePrimary)
-		return shard.Write().GetTenantUserAnalysis(ctx, arg.sqlcParams())
+		querySpan.SetRoute(pgmesh.RouteModePrimary)
+		route := shard.WriteRoute()
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
+		defer func() { physicalQuerySpan.End(err) }()
+		return route.Target.GetTenantUserAnalysis(ctx, arg.sqlcParams())
 
 	// Ordinary reads use the shard's replica route.
 	default:
-		querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModeRead)
-		return shard.Read().GetTenantUserAnalysis(ctx, arg.sqlcParams())
+		querySpan.SetRoute(pgmesh.RouteModeRead)
+		route := shard.ReadRoute()
+		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
+		defer func() { physicalQuerySpan.End(err) }()
+		return route.Target.GetTenantUserAnalysis(ctx, arg.sqlcParams())
 	}
 }

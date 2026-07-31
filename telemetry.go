@@ -17,9 +17,14 @@ import (
 
 const instrumentationName = "github.com/sundayfun/pgmesh"
 
-// MetricQueryDuration is the OpenTelemetry histogram of routed query durations
-// in seconds. Its count also reports completed query throughput. The configured
-// MeterProvider owns exporting and shutdown; pgmesh never shuts it down.
+// MetricOperationDuration is the OpenTelemetry histogram of logical generated
+// operation durations in seconds. Fan-out work contributes one data point.
+const MetricOperationDuration = "pgmesh.operation.duration"
+
+// MetricQueryDuration is the OpenTelemetry histogram of physical database
+// query durations in seconds. Its count reports per-node query throughput. The
+// configured MeterProvider owns exporting and shutdown; pgmesh never shuts it
+// down.
 const MetricQueryDuration = "pgmesh.query.duration"
 
 // MetricStoreDuration is the OpenTelemetry histogram of factory-wrapped store
@@ -53,10 +58,22 @@ const (
 	AttributeQueryName = "pgmesh.query.name"
 	// AttributeQueryKind identifies whether a routed query is a read or write.
 	AttributeQueryKind = "pgmesh.query.kind"
-	// AttributeReplicaSet identifies the selected physical replica set.
-	AttributeReplicaSet = "pgmesh.route.replica_set"
+	// AttributeShardName identifies the selected physical shard (replica set).
+	AttributeShardName = "pgmesh.shard.name"
+	// AttributeVirtualShard identifies the selected virtual shard on spans and
+	// logs. It is deliberately excluded from metrics to bound cardinality.
+	AttributeVirtualShard = "pgmesh.shard.virtual"
+	// AttributeNodeName identifies a stable node within a physical shard.
+	AttributeNodeName = "pgmesh.node.name"
+	// AttributeNodeRole identifies whether the node is a primary or read replica.
+	AttributeNodeRole = "pgmesh.node.role"
 	// AttributeRouteMode identifies the database path selected for a query.
 	AttributeRouteMode = "pgmesh.route.mode"
+	// AttributeRouteScope identifies single-shard versus fan-out operations.
+	AttributeRouteScope = "pgmesh.route.scope"
+	// AttributeRouteShardCount reports the number of physical shard executions
+	// on spans and logs. It is excluded from metrics to bound cardinality.
+	AttributeRouteShardCount = "pgmesh.route.shard_count"
 	// AttributeInternalStoreExecuted reports whether a factory wrapper entered
 	// the generated internal store implementation.
 	AttributeInternalStoreExecuted = "pgmesh.store.internal_executed"
@@ -87,11 +104,26 @@ const (
 	RouteModePrimary RouteMode = "primary"
 	// RouteModeTransaction indicates a query executed on an explicit transaction.
 	RouteModeTransaction RouteMode = "transaction"
+	// RouteModeUnresolved indicates that routing failed before selecting a path.
+	RouteModeUnresolved RouteMode = "unresolved"
+)
+
+// RouteScope classifies the fan-out of one logical operation.
+type RouteScope string
+
+const (
+	// RouteScopeSingle identifies an operation targeting at most one shard.
+	RouteScopeSingle RouteScope = "single"
+	// RouteScopeFanout identifies an operation targeting multiple shards.
+	RouteScopeFanout RouteScope = "fanout"
+	// RouteScopeUnresolved indicates that routing did not resolve a scope.
+	RouteScopeUnresolved RouteScope = "unresolved"
 )
 
 type queryTelemetry struct {
 	tracer               trace.Tracer
 	storeDuration        metric.Float64Histogram
+	operationDuration    metric.Float64Histogram
 	queryDuration        metric.Float64Histogram
 	copyBatchRows        metric.Int64Histogram
 	copyBatchSubmissions metric.Int64Histogram
@@ -105,13 +137,32 @@ type queryTelemetry struct {
 // generated store calls End exactly once; callers using StartSpan directly must
 // do the same.
 type QuerySpan struct {
-	ctx           context.Context
-	span          trace.Span
-	queryDuration metric.Float64Histogram
-	started       time.Time
-	attributes    []attribute.KeyValue
-	logger        *slog.Logger
-	logAttributes []slog.Attr
+	ctx               context.Context
+	span              trace.Span
+	tracer            trace.Tracer
+	operationDuration metric.Float64Histogram
+	queryDuration     metric.Float64Histogram
+	started           time.Time
+	attributes        []attribute.KeyValue
+	storeName         string
+	queryName         string
+	kind              QueryKind
+	routeMode         RouteMode
+	routeScope        RouteScope
+	shardCount        int
+	logger            *slog.Logger
+	logAttributes     []slog.Attr
+}
+
+// PhysicalQuerySpan records one database execution on one resolved node.
+type PhysicalQuerySpan struct {
+	ctx              context.Context
+	span             trace.Span
+	queryDuration    metric.Float64Histogram
+	started          time.Time
+	metricAttributes []attribute.KeyValue
+	logger           *slog.Logger
+	logAttributes    []slog.Attr
 }
 
 // StoreSpan records tracing, metrics, and logging around one factory-wrapped
@@ -164,9 +215,21 @@ func (t *queryTelemetry) setMeterProvider(provider metric.MeterProvider) error {
 		instrumentationName,
 		metric.WithSchemaURL(semconv.SchemaURL),
 	)
+	operationDuration, err := meter.Float64Histogram(
+		MetricOperationDuration,
+		metric.WithDescription("Duration of logical pgmesh operations"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(
+			0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10,
+		),
+	)
+	if err != nil {
+		return err
+	}
+	t.operationDuration = operationDuration
 	queryDuration, err := meter.Float64Histogram(
 		MetricQueryDuration,
-		metric.WithDescription("Duration of routed pgmesh queries"),
+		metric.WithDescription("Duration of physical pgmesh database queries"),
 		metric.WithUnit("s"),
 		metric.WithExplicitBucketBoundaries(
 			0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10,
@@ -251,13 +314,15 @@ func (t *queryTelemetry) setMeterProvider(provider metric.MeterProvider) error {
 func (m *Mesh[R, W, SK]) CopyBatchObserver(
 	storeName string,
 	queryName string,
-	replicaSet string,
+	route RouteMetadata,
 ) CopyBatchObserver {
 	baseAttributes := []attribute.KeyValue{
 		attribute.String(AttributeStoreName, storeName),
 		attribute.String(AttributeQueryName, queryName),
 		attribute.String(AttributeQueryKind, string(QueryKindWrite)),
-		attribute.String(AttributeReplicaSet, replicaSet),
+		attribute.String(AttributeShardName, route.Shard),
+		attribute.String(AttributeNodeName, route.Node),
+		attribute.String(AttributeNodeRole, string(route.Role)),
 		attribute.String(AttributeRouteMode, string(RouteModePrimary)),
 	}
 	return func(ctx context.Context, observation CopyBatchObservation) {
@@ -339,8 +404,8 @@ func (m *Mesh[R, W, SK]) StartStoreSpan(
 	}
 }
 
-// StartSpan starts telemetry for a routed query and returns the span context so
-// database instrumentation can create child spans.
+// StartSpan starts telemetry for one logical generated operation. Physical
+// executions are recorded as child spans through StartQuerySpan.
 //
 //nolint:spancheck // The generated caller ends the returned QuerySpan.
 func (m *Mesh[R, W, SK]) StartSpan(
@@ -357,20 +422,30 @@ func (m *Mesh[R, W, SK]) StartSpan(
 		attribute.String(AttributeStoreName, storeName),
 		attribute.String(AttributeQueryName, queryName),
 		attribute.String(AttributeQueryKind, string(kind)),
+		attribute.String(AttributeRouteMode, string(RouteModeUnresolved)),
+		attribute.String(AttributeRouteScope, string(RouteScopeUnresolved)),
 	}
 	ctx, span := m.telemetry.tracer.Start(
 		ctx,
-		"pgmesh.query."+storeName+"."+queryName,
+		"pgmesh.operation."+storeName+"."+queryName,
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(attributes...),
 	)
 	return ctx, &QuerySpan{
-		ctx:           ctx,
-		span:          span,
-		queryDuration: m.telemetry.queryDuration,
-		started:       time.Now(),
-		attributes:    attributes,
-		logger:        m.telemetry.logger,
+		ctx:               ctx,
+		span:              span,
+		tracer:            m.telemetry.tracer,
+		operationDuration: m.telemetry.operationDuration,
+		queryDuration:     m.telemetry.queryDuration,
+		started:           time.Now(),
+		attributes:        attributes[:3],
+		storeName:         storeName,
+		queryName:         queryName,
+		kind:              kind,
+		routeMode:         RouteModeUnresolved,
+		routeScope:        RouteScopeUnresolved,
+		shardCount:        0,
+		logger:            m.telemetry.logger,
 		logAttributes: []slog.Attr{
 			slog.String("store_name", storeName),
 			slog.String("query_name", queryName),
@@ -379,47 +454,151 @@ func (m *Mesh[R, W, SK]) StartSpan(
 	}
 }
 
-// SetRoute records the selected virtual shard for debug logging and the bounded
-// physical-route attributes used by tracing and metrics.
-func (s *QuerySpan) SetRoute(
-	vshard uint64,
-	replicaSet string,
+// SetRoute records that one logical operation targets a single physical shard.
+func (s *QuerySpan) SetRoute(mode RouteMode) {
+	s.setRoute(mode, RouteScopeSingle, 1)
+}
+
+// SetMultiRoute records the number of physical shards resolved by an operation
+// that can fan out. A single resolved shard retains normal single-route scope.
+// Each database execution must also use StartQuerySpan.
+func (s *QuerySpan) SetMultiRoute(mode RouteMode, shardCount int) {
+	scope := RouteScopeSingle
+	if shardCount > 1 {
+		scope = RouteScopeFanout
+	}
+	s.setRoute(mode, scope, shardCount)
+}
+
+func (s *QuerySpan) setRoute(mode RouteMode, scope RouteScope, shardCount int) {
+	s.routeMode = mode
+	s.routeScope = scope
+	s.shardCount = shardCount
+	routeAttributes := []attribute.KeyValue{
+		attribute.String(AttributeRouteMode, string(mode)),
+		attribute.String(AttributeRouteScope, string(scope)),
+		attribute.Int(AttributeRouteShardCount, shardCount),
+	}
+	s.span.SetAttributes(routeAttributes...)
+}
+
+// StartQuerySpan starts one physical database-query child of this operation.
+// The returned context must be passed to the selected route's Target.
+func (s *QuerySpan) StartQuerySpan(
+	ctx context.Context,
+	route RouteMetadata,
 	mode RouteMode,
-) {
-	routeAttributes := []attribute.KeyValue{
-		attribute.String(AttributeReplicaSet, replicaSet),
-		attribute.String(AttributeRouteMode, string(mode)),
-	}
-	s.span.SetAttributes(routeAttributes...)
-	s.attributes = append(s.attributes, routeAttributes...)
-	s.logAttributes = append(
-		s.logAttributes,
-		slog.String("vshard", strconv.FormatUint(vshard, 10)),
-		slog.String("replica_set", replicaSet),
-		slog.String("route_mode", string(mode)),
+) (context.Context, *PhysicalQuerySpan) {
+	return startPhysicalQuerySpan(
+		ctx,
+		s.tracer,
+		s.queryDuration,
+		s.logger,
+		s.storeName,
+		s.queryName,
+		s.kind,
+		route,
+		mode,
 	)
 }
 
-// SetMultiRoute records the routing mode for one logical operation targeting
-// zero or more physical replica sets. It deliberately omits a virtual-shard
-// index and replica-set name because no single value represents the operation.
-func (s *QuerySpan) SetMultiRoute(mode RouteMode) {
-	routeAttributes := []attribute.KeyValue{
-		attribute.String(AttributeRouteMode, string(mode)),
-	}
-	s.span.SetAttributes(routeAttributes...)
-	s.attributes = append(s.attributes, routeAttributes...)
-	s.logAttributes = append(
-		s.logAttributes,
-		slog.String("route_mode", string(mode)),
+// StartQuerySpan starts a physical database-query span without requiring a
+// logical QuerySpan. It is used for asynchronous COPY batches.
+func (m *Mesh[R, W, SK]) StartQuerySpan(
+	ctx context.Context,
+	storeName string,
+	queryName string,
+	kind QueryKind,
+	route RouteMetadata,
+	mode RouteMode,
+) (context.Context, *PhysicalQuerySpan) {
+	return startPhysicalQuerySpan(
+		ctx,
+		m.telemetry.tracer,
+		m.telemetry.queryDuration,
+		m.telemetry.logger,
+		storeName,
+		queryName,
+		kind,
+		route,
+		mode,
 	)
 }
 
-// End records metrics and a debug log, records err if present, then ends the
-// routed query span. The configured providers and logger remain caller-owned.
+func startPhysicalQuerySpan(
+	ctx context.Context,
+	tracer trace.Tracer,
+	queryDuration metric.Float64Histogram,
+	logger *slog.Logger,
+	storeName string,
+	queryName string,
+	kind QueryKind,
+	route RouteMetadata,
+	mode RouteMode,
+) (context.Context, *PhysicalQuerySpan) {
+	node := route.Node
+	role := route.Role
+	if mode == RouteModeTransaction {
+		node = "transaction"
+		role = NodeRoleTransaction
+	}
+	metricAttributes := []attribute.KeyValue{
+		attribute.String(AttributeStoreName, storeName),
+		attribute.String(AttributeQueryName, queryName),
+		attribute.String(AttributeQueryKind, string(kind)),
+		attribute.String(AttributeShardName, route.Shard),
+		attribute.String(AttributeNodeName, node),
+		attribute.String(AttributeNodeRole, string(role)),
+		attribute.String(AttributeRouteMode, string(mode)),
+	}
+	spanAttributes := append([]attribute.KeyValue(nil), metricAttributes...)
+	if route.HasVirtualShard {
+		spanAttributes = append(
+			spanAttributes,
+			attribute.String(AttributeVirtualShard, strconv.FormatUint(route.VirtualShard, 10)),
+		)
+	}
+	logAttributes := []slog.Attr{
+		slog.String("store_name", storeName),
+		slog.String("query_name", queryName),
+		slog.String("query_kind", string(kind)),
+		slog.String("shard", route.Shard),
+		slog.String("node", node),
+		slog.String("node_role", string(role)),
+		slog.String("route_mode", string(mode)),
+	}
+	if route.HasVirtualShard {
+		logAttributes = append(
+			logAttributes,
+			slog.String("virtual_shard", strconv.FormatUint(route.VirtualShard, 10)),
+		)
+	}
+	//nolint:spancheck // The returned wrapper transfers ownership to the generated caller.
+	ctx, span := tracer.Start(
+		ctx,
+		"pgmesh.query."+storeName+"."+queryName,
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(spanAttributes...),
+	)
+	return ctx, &PhysicalQuerySpan{
+		ctx:              ctx,
+		span:             span,
+		queryDuration:    queryDuration,
+		started:          time.Now(),
+		metricAttributes: metricAttributes,
+		logger:           logger,
+		logAttributes:    logAttributes,
+	}
+}
+
+// End records the logical operation metric and span.
 func (s *QuerySpan) End(err error) {
 	duration := time.Since(s.started)
-	metricAttributes := append([]attribute.KeyValue(nil), s.attributes...)
+	metricAttributes := append(
+		append([]attribute.KeyValue(nil), s.attributes...),
+		attribute.String(AttributeRouteMode, string(s.routeMode)),
+		attribute.String(AttributeRouteScope, string(s.routeScope)),
+	)
 	if err != nil {
 		errorType := semconv.ErrorType(err)
 		s.span.RecordError(err)
@@ -428,7 +607,40 @@ func (s *QuerySpan) End(err error) {
 		metricAttributes = append(metricAttributes, errorType)
 	}
 	recordOptions := metric.WithAttributes(metricAttributes...)
-	s.queryDuration.Record(s.ctx, duration.Seconds(), recordOptions)
+	s.operationDuration.Record(s.ctx, duration.Seconds(), recordOptions)
+	if s.logger != nil && s.logger.Enabled(s.ctx, slog.LevelDebug) {
+		logAttributes := append(
+			append([]slog.Attr(nil), s.logAttributes...),
+			slog.String("route_mode", string(s.routeMode)),
+			slog.String("route_scope", string(s.routeScope)),
+			slog.Int("shard_count", s.shardCount),
+			slog.Bool("failed", err != nil),
+			slog.Duration("duration", duration),
+		)
+		if err != nil {
+			logAttributes = append(logAttributes, slog.Any("error", err))
+		}
+		s.logger.LogAttrs(s.ctx, slog.LevelDebug, "pgmesh operation completed", logAttributes...)
+	}
+	s.span.End()
+}
+
+// End records one physical database-query metric and span.
+func (s *PhysicalQuerySpan) End(err error) {
+	duration := time.Since(s.started)
+	metricAttributes := append([]attribute.KeyValue(nil), s.metricAttributes...)
+	if err != nil {
+		errorType := semconv.ErrorType(err)
+		s.span.RecordError(err)
+		s.span.SetAttributes(errorType)
+		s.span.SetStatus(codes.Error, err.Error())
+		metricAttributes = append(metricAttributes, errorType)
+	}
+	s.queryDuration.Record(
+		s.ctx,
+		duration.Seconds(),
+		metric.WithAttributes(metricAttributes...),
+	)
 	if s.logger != nil && s.logger.Enabled(s.ctx, slog.LevelDebug) {
 		logAttributes := append(
 			append([]slog.Attr(nil), s.logAttributes...),
