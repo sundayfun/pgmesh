@@ -65,6 +65,7 @@ sql:
 | `emit_pointers_for_null_types` | boolean | `false` | Matches sqlc pgx/v5 nullable pointer emission. |
 | `emit_pointers_for_null_enum_types` | boolean | inherits nullable pointer setting | Overrides nullable enum pointer emission. |
 | `emit_exact_table_names` | boolean | `false` | Matches sqlc's table-derived Go naming. |
+| `emit_json_tags` | boolean | `false` | Matches sqlc JSON tags on generated shard keys and routed `QueryNameT` parameter structs. |
 | `rename` | map of string to Go identifier | empty | Matches sqlc identifier renames. |
 | `overrides` | override list | empty | Matches sqlc database-type and column overrides. |
 

@@ -38,12 +38,18 @@ provider lifecycle: build providers before the store, keep them alive while
 queries run, then flush or shut them down after query traffic has stopped.
 pgmesh never shuts down a provider.
 
-pgmesh emits two metric instruments:
+pgmesh emits query/store duration instruments and physical COPY batching
+instruments:
 
 | Metric | Type | Unit | Meaning |
 | --- | --- | --- | --- |
 | `pgmesh.store.duration` | Histogram | `s` | End-to-end duration of a configured factory wrapper |
 | `pgmesh.query.duration` | Histogram | `s` | Generated internal routing and query duration |
+| `pgmesh.copy.batch.rows` | Histogram | `{row}` | Attempted rows in each physical COPY batch |
+| `pgmesh.copy.batch.submissions` | Histogram | `{submission}` | Logical submission fragments represented in each physical COPY batch |
+| `pgmesh.copy.batch.flushes` | Counter | `{batch}` | Physical COPY batches, grouped by flush reason |
+| `pgmesh.copy.batch.duration` | Histogram | `s` | Physical COPY execution duration |
+| `pgmesh.copy.queue.duration` | Histogram | `s` | Time from the oldest row's admission until physical COPY execution begins |
 
 Each histogram's count reports throughput for its layer. For a cache-aside
 wrapper, filter `pgmesh.store.duration` by
@@ -71,6 +77,23 @@ telemetry when queued because their database work finishes later through result
 callbacks. Instrument batch consumption separately when those operations need
 latency or outcome telemetry.
 
+Generated `Enqueue<CopyQuery>` spans and duration metrics end when their future
+resolves, not when enqueue returns, and therefore include queueing plus COPY
+time. `Flush<CopyQuery>` is a control operation and emits no query span or
+metric point of its own. A physical batch forced by that control operation does
+emit COPY metrics with flush reason `explicit`.
+
+COPY batch metrics are emitted for both configured batching and the unconfigured
+immediate-async fallback. Flush reason is one of `size`, `timeout`, `explicit`,
+or `immediate`. `pgmesh.copy.batch.rows` measures attempted rows, including a
+batch whose COPY fails; filter or group by `error.type` to distinguish failures.
+For a selected query and replica set, average physical batch size is the
+histogram sum divided by its count. The equivalent calculation for
+`pgmesh.copy.batch.submissions` shows the average number of logical submission
+fragments coalesced into one COPY. A submission split by `BatchSize`, or routed
+to several replica sets, contributes one fragment to each affected physical
+batch.
+
 Store spans and `pgmesh.store.duration` points record:
 
 | Attribute | When recorded | Value |
@@ -90,6 +113,18 @@ Query spans and `pgmesh.query.duration` points record:
 | `pgmesh.query.kind` | Always | `read` or `write` |
 | `pgmesh.route.replica_set` | After successful routing | Physical replica-set name |
 | `pgmesh.route.mode` | After successful routing | `read`, `primary`, or `transaction` |
+| `error.type` | On failure | Predictable Go error type |
+
+Physical COPY metrics record:
+
+| Attribute | When recorded | Value |
+| --- | --- | --- |
+| `pgmesh.store.name` | Always | Generated query-group name |
+| `pgmesh.query.name` | Always | Underlying `:copyfrom` query name |
+| `pgmesh.query.kind` | Always | `write` |
+| `pgmesh.route.replica_set` | Always | Physical replica-set name |
+| `pgmesh.route.mode` | Always | `primary` |
+| `pgmesh.copy.batch.flush_reason` | Always | `size`, `timeout`, `explicit`, or `immediate` |
 | `error.type` | On failure | Predictable Go error type |
 
 Virtual-shard indexes are deliberately excluded from OpenTelemetry attributes

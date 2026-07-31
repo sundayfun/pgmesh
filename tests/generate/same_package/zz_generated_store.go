@@ -85,6 +85,9 @@ type storeOptions struct {
 		QueryMessage func(QueryMessage) QueryMessage
 		Users        func(Users) Users
 	}
+	copyBatching struct {
+		copyUsers *pgmesh.CopyBatchConfig
+	}
 }
 
 // StoreOption customizes a generated store.
@@ -182,9 +185,10 @@ func NewStore(ctx context.Context, topology Topology, options ...StoreOption) (S
 }
 
 type meshStore[SK any] struct {
-	mesh     *pgmesh.Mesh[*readQueries, *queryStore, SK]
-	resolver ShardResolver[SK]
-	groups   struct {
+	mesh           *pgmesh.Mesh[*readQueries, *queryStore, SK]
+	resolver       ShardResolver[SK]
+	copyUsersBatch *copyUsersBatchState
+	groups         struct {
 		Analyses     Analyses
 		QueryMessage QueryMessage
 		Users        Users
@@ -192,6 +196,30 @@ type meshStore[SK any] struct {
 }
 
 var _ Store = (*meshStore[uint8])(nil)
+
+func (q *meshStore[SK]) initializeCopyBatchers(options storeOptions) error {
+	copyUsersBatchConfig := pgmesh.CopyBatchConfig{}
+	copyUsersBatchEnabled := false
+	if configured := options.copyBatching.copyUsers; configured != nil {
+		copyUsersBatchConfig = *configured
+		copyUsersBatchEnabled = true
+	}
+	copyUsersBatch := &copyUsersBatchState{
+		enabled:  copyUsersBatchEnabled,
+		batchers: make(map[string]*pgmesh.CopyBatcher[*CopyUsersParams]),
+	}
+	for _, shard := range q.mesh.AllShards() {
+		batcher, err := pgmesh.NewCopyBatcher[*CopyUsersParams](copyUsersBatchConfig, func(ctx context.Context, rows []*CopyUsersParams) (int64, error) {
+			return shard.Write().CopyUsers(ctx, rows)
+		}, q.mesh.CopyBatchObserver("Users", "CopyUsers", shard.Name()))
+		if err != nil {
+			return fmt.Errorf("configure CopyUsers copy batching: %w", err)
+		}
+		copyUsersBatch.batchers[shard.Name()] = batcher
+	}
+	q.copyUsersBatch = copyUsersBatch
+	return nil
+}
 
 type groupedMeshStore[SK any] struct {
 	store *meshStore[SK]
@@ -258,6 +286,9 @@ func (c singletonTopology) buildStore(_ context.Context, options storeOptions) (
 		return nil, err
 	}
 	store := &meshStore[uint8]{mesh: mesh}
+	if err := store.initializeCopyBatchers(options); err != nil {
+		return nil, err
+	}
 	store.initializeGroups(options)
 	return store, nil
 }

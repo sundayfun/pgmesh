@@ -4,9 +4,12 @@ package store
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"github.com/jackc/pgx/v5/pgconn"
 	pgmesh "github.com/sundayfun/pgmesh"
 	db "github.com/sundayfun/pgmesh/tests/generate/commands/internal"
+	"sync"
 )
 
 // BatchInsertCommandUsersT is the store parameter type for BatchInsertCommandUsers.
@@ -14,6 +17,18 @@ type BatchInsertCommandUsersT = db.BatchInsertCommandUsersParams
 
 // CopyCommandUsersT is the store parameter type for CopyCommandUsers.
 type CopyCommandUsersT = db.CopyCommandUsersParams
+
+type copyCommandUsersBatchState struct {
+	mu       sync.Mutex
+	enabled  bool
+	batchers map[string]*pgmesh.CopyBatcher[*db.CopyCommandUsersParams]
+}
+
+// WithCopyCommandUsersBatching enables asynchronous micro-batching for CopyCommandUsers.
+func WithCopyCommandUsersBatching(config pgmesh.CopyBatchConfig) StoreOption {
+	configured := config
+	return func(options *storeOptions) { options.copyBatching.copyCommandUsers = &configured }
+}
 
 // CommandsReader exposes read queries in the Commands store group.
 type CommandsReader interface {
@@ -33,6 +48,10 @@ type CommandsWriter interface {
 	BatchInsertCommandUsers(ctx context.Context, arg []*BatchInsertCommandUsersT, storeOptions ...QueryOption) *db.BatchInsertCommandUsersBatchResults
 	// CopyCommandUsers executes the generated CopyCommandUsers query.
 	CopyCommandUsers(ctx context.Context, arg []*CopyCommandUsersT, storeOptions ...QueryOption) (int64, error)
+	// EnqueueCopyCommandUsers accepts rows for asynchronous COPY.
+	EnqueueCopyCommandUsers(ctx context.Context, arg []*CopyCommandUsersT) *pgmesh.Future[int64]
+	// FlushCopyCommandUsers drains asynchronous submissions accepted before its barrier.
+	FlushCopyCommandUsers(ctx context.Context) error
 	// DeleteCommandUser executes the generated DeleteCommandUser query.
 	DeleteCommandUser(ctx context.Context, id int64, storeOptions ...QueryOption) error
 	// DeleteCommandUsersByTenant executes the generated DeleteCommandUsersByTenant query.
@@ -68,6 +87,20 @@ func (q *telemetryCommandsStore[SK]) CopyCommandUsers(ctx context.Context, arg [
 	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Commands", "CopyCommandUsers", pgmesh.QueryKindWrite)
 	defer func() { storeSpan.End(err) }()
 	return q.target.CopyCommandUsers(ctx, arg, storeOptions...)
+}
+
+func (q *telemetryCommandsStore[SK]) EnqueueCopyCommandUsers(ctx context.Context, arg []*CopyCommandUsersT) *pgmesh.Future[int64] {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Commands", "EnqueueCopyCommandUsers", pgmesh.QueryKindWrite)
+	future := q.target.EnqueueCopyCommandUsers(ctx, arg)
+	return pgmesh.RunFuture(func() (int64, error) {
+		count, err := future.Await(context.Background())
+		storeSpan.End(err)
+		return count, err
+	})
+}
+
+func (q *telemetryCommandsStore[SK]) FlushCopyCommandUsers(ctx context.Context) error {
+	return q.target.FlushCopyCommandUsers(ctx)
 }
 
 func (q *telemetryCommandsStore[SK]) DeleteCommandUser(ctx context.Context, id int64, storeOptions ...QueryOption) (err error) {
@@ -208,6 +241,109 @@ func (q *groupedMeshStore[SK]) CopyCommandUsers(ctx context.Context, arg []*Copy
 	// Execute the write after recording its resolved route.
 	querySpan.SetRoute(shard.VShardIndex(), shard.Name(), mode)
 	return target.CopyCommandUsers(ctx, arg)
+}
+
+// EnqueueCopyCommandUsers accepts rows for asynchronous COPY.
+func (q *groupedMeshStore[SK]) EnqueueCopyCommandUsers(ctx context.Context, arg []*CopyCommandUsersT) *pgmesh.Future[int64] {
+	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Commands", "EnqueueCopyCommandUsers", pgmesh.QueryKindWrite)
+	finish := func(future *pgmesh.Future[int64]) *pgmesh.Future[int64] {
+		return pgmesh.RunFuture(func() (int64, error) {
+			count, err := future.Await(context.Background())
+			querySpan.End(err)
+			return count, err
+		})
+	}
+
+	type asyncCopyShardGroup struct {
+		shard   *pgmesh.Shard[*readQueries, *queryStore]
+		args    []*db.CopyCommandUsersParams
+		batcher *pgmesh.CopyBatcher[*db.CopyCommandUsersParams]
+	}
+	var shardKey SK
+	shard, routeErr := q.store.mesh.Shard(shardKey)
+	if routeErr != nil {
+		return finish(pgmesh.ResolvedFuture[int64](0, routeErr))
+	}
+	groups := []*asyncCopyShardGroup{{shard: shard, args: arg}}
+	querySpan.SetRoute(shard.VShardIndex(), shard.Name(), pgmesh.RouteModePrimary)
+	if len(groups) == 0 {
+		return finish(pgmesh.ResolvedFuture[int64](0, nil))
+	}
+	state := q.store.copyCommandUsersBatch
+	state.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		state.mu.Unlock()
+		return finish(pgmesh.ResolvedFuture[int64](0, err))
+	}
+	for _, shardGroup := range groups {
+		shardGroup.batcher = state.batchers[shardGroup.shard.Name()]
+		if shardGroup.batcher == nil {
+			state.mu.Unlock()
+			err := fmt.Errorf("query EnqueueCopyCommandUsers has no copy batcher for replica set %q", shardGroup.shard.Name())
+			return finish(pgmesh.ResolvedFuture[int64](0, err))
+		}
+	}
+	acceptedContext := context.WithoutCancel(ctx)
+	type asyncCopyResult struct {
+		shardName string
+		future    *pgmesh.Future[int64]
+	}
+	asyncResults := make([]asyncCopyResult, 0, len(groups))
+	for _, shardGroup := range groups {
+		var future *pgmesh.Future[int64]
+		if state.enabled {
+			future = shardGroup.batcher.Submit(acceptedContext, shardGroup.args)
+		} else {
+			future = shardGroup.batcher.SubmitImmediate(acceptedContext, shardGroup.args)
+		}
+		asyncResults = append(asyncResults, asyncCopyResult{shardName: shardGroup.shard.Name(), future: future})
+	}
+	state.mu.Unlock()
+
+	combined := pgmesh.RunFuture(func() (int64, error) {
+		var count int64
+		copyErrors := make([]error, 0, len(asyncResults))
+		for _, asyncResult := range asyncResults {
+			shardCount, err := asyncResult.future.Await(context.Background())
+			if err != nil {
+				copyErrors = append(copyErrors, fmt.Errorf("query CopyCommandUsers on replica set %q: %w", asyncResult.shardName, err))
+				continue
+			}
+			count += shardCount
+		}
+		if err := errors.Join(copyErrors...); err != nil {
+			return 0, err
+		}
+		return count, nil
+	})
+	return finish(combined)
+}
+
+// FlushCopyCommandUsers drains asynchronous submissions accepted before its barrier.
+func (q *groupedMeshStore[SK]) FlushCopyCommandUsers(ctx context.Context) error {
+	state := q.store.copyCommandUsersBatch
+	state.mu.Lock()
+	type copyFlushResult struct {
+		shardName string
+		future    *pgmesh.Future[struct{}]
+	}
+	flushes := make([]copyFlushResult, 0, len(q.store.mesh.AllShards()))
+	for _, shard := range q.store.mesh.AllShards() {
+		if batcher := state.batchers[shard.Name()]; batcher != nil {
+			flushes = append(flushes, copyFlushResult{shardName: shard.Name(), future: batcher.FlushAsync()})
+		}
+	}
+	state.mu.Unlock()
+	flushErrors := make([]error, 0, len(flushes))
+	for _, flushResult := range flushes {
+		if _, err := flushResult.future.Await(ctx); err != nil {
+			flushErrors = append(flushErrors, fmt.Errorf("flush CopyCommandUsers on replica set %q: %w", flushResult.shardName, err))
+			if ctx.Err() != nil {
+				break
+			}
+		}
+	}
+	return errors.Join(flushErrors...)
 }
 
 // DeleteCommandUser executes the generated query on its target shard.

@@ -61,3 +61,6 @@ OpenTelemetry logging bridge to add trace correlation fields.
 
 sqlc batch methods that return a batch-results object do not log completion
 when queued because execution finishes later through result callbacks.
+Generated asynchronous copy methods log completion when their returned future
+resolves, so their duration includes queueing and physical COPY time. Explicit
+`Flush<CopyQuery>` control calls do not produce query-completion records.

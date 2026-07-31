@@ -54,6 +54,8 @@ type options struct {
 	EmitPointersForNullEnumType *bool `json:"emit_pointers_for_null_enum_types"`
 	// EmitExactTableNames preserves table names when deriving generated Go types.
 	EmitExactTableNames bool `json:"emit_exact_table_names"`
+	// EmitJSONTags matches sqlc's JSON struct-tag emission.
+	EmitJSONTags bool `json:"emit_json_tags"`
 	// Rename maps SQL identifiers to generated Go identifiers.
 	Rename map[string]string `json:"rename"`
 	// Overrides applies sqlc-compatible database and column type overrides.

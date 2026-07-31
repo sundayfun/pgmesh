@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -53,6 +54,7 @@ type fakeDB struct {
 	users        []*User
 
 	mu         sync.Mutex
+	copyCalls  int
 	copiedRows [][]any
 	queriedIDs [][]int64
 	ignoreIDs  bool
@@ -106,6 +108,9 @@ func (db *fakeDB) CopyFrom(
 	source pgx.CopyFromSource,
 ) (int64, error) {
 	db.log.add(db.name)
+	db.mu.Lock()
+	db.copyCalls++
+	db.mu.Unlock()
 	if db.copyErr != nil {
 		return 0, db.copyErr
 	}
@@ -124,6 +129,12 @@ func (db *fakeDB) CopyFrom(
 		return 0, err
 	}
 	return count, nil
+}
+
+func (db *fakeDB) copyCallCount() int {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return db.copyCalls
 }
 
 func (db *fakeDB) copied() [][]any {
@@ -515,6 +526,7 @@ func buildTwoShardStore(
 	shardAPrimary *fakeDB,
 	shardAReplica *fakeDB,
 	shardBMirror *fakeDB,
+	storeOptions ...StoreOption,
 ) Store {
 	t.Helper()
 
@@ -543,6 +555,7 @@ func buildTwoShardStore(
 	store, err := NewStore(
 		t.Context(),
 		Sharded(4, hasher, identityTenantResolver{}, options...),
+		storeOptions...,
 	)
 	require.NoError(t, err)
 	return store
@@ -1080,6 +1093,290 @@ func TestGeneratedGroupedCopyAttemptsEveryGroupAndZerosFailures(t *testing.T) {
 	assert.ElementsMatch(t, []string{"shard-b-primary", "shard-a-primary"}, log.snapshot())
 }
 
+func TestGeneratedAsyncCopyCoalescesConcurrentCallersPerPhysicalShard(t *testing.T) {
+	t.Parallel()
+
+	log := &callLog{}
+	primary := &fakeDB{name: "shard-b-primary", log: log}
+	mirror := &fakeDB{name: "shard-b-mirror", log: log}
+	store := buildTwoShardStore(
+		t,
+		pgmesh.ModularShardHashFor[uint64](4),
+		primary,
+		nil,
+		&fakeDB{name: "shard-a-primary", log: log},
+		nil,
+		mirror,
+		WithCopyUsersBatching(pgmesh.CopyBatchConfig{
+			BatchSize:    8,
+			FlushTimeout: time.Hour,
+		}),
+	)
+
+	futures := make(chan *pgmesh.Future[int64], 8)
+	var callers sync.WaitGroup
+	for index := range 8 {
+		callers.Go(func() {
+			futures <- store.Users().EnqueueCopyUsers(t.Context(), []*CopyUsersT{{
+				TenantKey: TenantKey{TenantID: 0},
+				ID:        int64(100 + index),
+				Name:      fmt.Sprintf("user-%d", index),
+			}})
+		})
+	}
+	callers.Wait()
+	close(futures)
+	for future := range futures {
+		count, err := future.Await(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), count)
+	}
+
+	assert.Equal(t, 1, primary.copyCallCount())
+	assert.Equal(t, 1, mirror.copyCallCount())
+	assert.Len(t, primary.copied(), 8)
+	assert.ElementsMatch(t, primary.copied(), mirror.copied())
+}
+
+func TestGeneratedAsyncCopyPartitionsAndSplitsSubmissions(t *testing.T) {
+	t.Parallel()
+
+	log := &callLog{}
+	shardB := &fakeDB{name: "shard-b-primary", log: log}
+	shardA := &fakeDB{name: "shard-a-primary", log: log}
+	store := buildTwoShardStore(
+		t,
+		pgmesh.ModularShardHashFor[uint64](4),
+		shardB,
+		nil,
+		shardA,
+		nil,
+		nil,
+		WithCopyUsersBatching(pgmesh.CopyBatchConfig{
+			BatchSize:    2,
+			FlushTimeout: time.Hour,
+		}),
+	)
+
+	future := store.Users().EnqueueCopyUsers(t.Context(), []*CopyUsersT{
+		{TenantKey: TenantKey{TenantID: 0}, ID: 10},
+		{TenantKey: TenantKey{TenantID: 2}, ID: 12},
+		{TenantKey: TenantKey{TenantID: 0}, ID: 14},
+		{TenantKey: TenantKey{TenantID: 1}, ID: 11},
+	})
+	require.NoError(t, store.Users().FlushCopyUsers(t.Context()))
+	count, err := future.Await(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, int64(4), count)
+	assert.Equal(t, 2, shardB.copyCallCount())
+	assert.Equal(t, 1, shardA.copyCallCount())
+	copied := shardB.copied()
+	ids := make([]int64, 0, len(copied))
+	for _, row := range copied {
+		id, ok := row[0].(int64)
+		require.True(t, ok)
+		ids = append(ids, id)
+	}
+	assert.Equal(t, []int64{10, 12, 14}, ids)
+}
+
+func TestGeneratedAsyncCopyImmediateFallbackAndCancellation(t *testing.T) {
+	t.Parallel()
+
+	log := &callLog{}
+	primary := &fakeDB{name: "shard-b-primary", log: log}
+	store := buildTwoShardStore(
+		t,
+		pgmesh.ModularShardHashFor[uint64](4),
+		primary,
+		nil,
+		&fakeDB{name: "shard-a-primary", log: log},
+		nil,
+		nil,
+	)
+
+	first := store.Users().EnqueueCopyUsers(t.Context(), []*CopyUsersT{{
+		TenantKey: TenantKey{TenantID: 0}, ID: 10,
+	}})
+	second := store.Users().EnqueueCopyUsers(t.Context(), []*CopyUsersT{{
+		TenantKey: TenantKey{TenantID: 2}, ID: 12,
+	}})
+	for _, future := range []*pgmesh.Future[int64]{first, second} {
+		count, err := future.Await(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), count)
+	}
+	assert.Equal(t, 2, primary.copyCallCount())
+
+	batchedPrimary := &fakeDB{name: "batched-primary", log: log}
+	batched := buildTwoShardStore(
+		t,
+		pgmesh.ModularShardHashFor[uint64](4),
+		batchedPrimary,
+		nil,
+		&fakeDB{name: "batched-shard-a", log: log},
+		nil,
+		nil,
+		WithCopyUsersBatching(pgmesh.CopyBatchConfig{FlushTimeout: time.Hour}),
+	)
+	pending := batched.Users().EnqueueCopyUsers(t.Context(), []*CopyUsersT{{
+		TenantKey: TenantKey{TenantID: 0}, ID: 20,
+	}})
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := pending.Await(canceled)
+	require.ErrorIs(t, err, context.Canceled)
+	require.NoError(t, batched.Users().FlushCopyUsers(t.Context()))
+	count, err := pending.Await(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), count)
+	assert.Equal(t, 1, batchedPrimary.copyCallCount())
+}
+
+func TestGeneratedAsyncCopyPreflightAndSharedFailures(t *testing.T) {
+	t.Parallel()
+
+	t.Run("route failure accepts no writes", func(t *testing.T) {
+		t.Parallel()
+
+		log := &callLog{}
+		primary := &fakeDB{name: "shard-b-primary", log: log}
+		store := buildTwoShardStore(
+			t,
+			identityShardHasher{},
+			primary,
+			nil,
+			&fakeDB{name: "shard-a-primary", log: log},
+			nil,
+			nil,
+			WithCopyUsersBatching(pgmesh.CopyBatchConfig{}),
+		)
+
+		future := store.Users().EnqueueCopyUsers(t.Context(), []*CopyUsersT{
+			{TenantKey: TenantKey{TenantID: 0}, ID: 10},
+			{TenantKey: TenantKey{TenantID: 4}, ID: 14},
+		})
+		count, err := future.Await(t.Context())
+		require.ErrorIs(t, err, pgmesh.ErrVShardOutOfRange)
+		require.ErrorContains(t, err, "input 1")
+		assert.Zero(t, count)
+		assert.Zero(t, primary.copyCallCount())
+	})
+
+	t.Run("coalesced failure reaches every caller", func(t *testing.T) {
+		t.Parallel()
+
+		log := &callLog{}
+		copyErr := errors.New("copy unavailable")
+		primary := &fakeDB{name: "shard-b-primary", log: log, copyErr: copyErr}
+		store := buildTwoShardStore(
+			t,
+			pgmesh.ModularShardHashFor[uint64](4),
+			primary,
+			nil,
+			&fakeDB{name: "shard-a-primary", log: log},
+			nil,
+			nil,
+			WithCopyUsersBatching(pgmesh.CopyBatchConfig{BatchSize: 2}),
+		)
+
+		first := store.Users().EnqueueCopyUsers(t.Context(), []*CopyUsersT{{
+			TenantKey: TenantKey{TenantID: 0}, ID: 10,
+		}})
+		second := store.Users().EnqueueCopyUsers(t.Context(), []*CopyUsersT{{
+			TenantKey: TenantKey{TenantID: 2}, ID: 12,
+		}})
+		for _, future := range []*pgmesh.Future[int64]{first, second} {
+			count, err := future.Await(t.Context())
+			require.ErrorIs(t, err, copyErr)
+			require.ErrorContains(t, err, `replica set "shard-b"`)
+			assert.Zero(t, count)
+		}
+		assert.Equal(t, 1, primary.copyCallCount())
+	})
+}
+
+func TestGeneratedCopyBatchConfigValidation(t *testing.T) {
+	t.Parallel()
+
+	log := &callLog{}
+	_, err := NewStore(
+		t.Context(),
+		Singleton(&fakeDB{name: "primary", log: log}),
+		WithCopyUsersBatching(pgmesh.CopyBatchConfig{BatchSize: -1}),
+	)
+	require.ErrorContains(t, err, "configure CopyUsers copy batching")
+	require.ErrorContains(t, err, "must not be negative")
+}
+
+func TestGeneratedAsyncCopyTelemetryEndsWhenFutureResolves(t *testing.T) {
+	t.Parallel()
+
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	t.Cleanup(func() { require.NoError(t, tracerProvider.Shutdown(context.Background())) })
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { require.NoError(t, meterProvider.Shutdown(context.Background())) })
+	log := &callLog{}
+	store, err := NewStore(
+		t.Context(),
+		Singleton(&fakeDB{name: "primary", log: log}),
+		WithTracerProvider(tracerProvider),
+		WithMeterProvider(meterProvider),
+		WithCopyUsersBatching(pgmesh.CopyBatchConfig{FlushTimeout: time.Hour}),
+	)
+	require.NoError(t, err)
+
+	future := store.Users().EnqueueCopyUsers(t.Context(), []*CopyUsersT{{
+		TenantKey: TenantKey{TenantID: 2}, ID: 20,
+	}})
+	assert.Empty(t, recorder.Ended())
+	require.NoError(t, store.Users().FlushCopyUsers(t.Context()))
+	count, err := future.Await(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), count)
+
+	spans := recorder.Ended()
+	require.Len(t, spans, 1)
+	assert.Equal(t, "pgmesh.query.Users.EnqueueCopyUsers", spans[0].Name())
+	attributes := make(map[attribute.Key]attribute.Value)
+	for _, item := range spans[0].Attributes() {
+		attributes[item.Key] = item.Value
+	}
+	assert.Equal(t, "primary", attributes[attribute.Key(pgmesh.AttributeRouteMode)].AsString())
+
+	var metrics metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(t.Context(), &metrics))
+	rows := telemetryIntHistogram(t, metrics, pgmesh.MetricCopyBatchRows)
+	require.Len(t, rows.DataPoints, 1)
+	assert.Equal(t, uint64(1), rows.DataPoints[0].Count)
+	assert.Equal(t, int64(1), rows.DataPoints[0].Sum)
+	batchAttributes := telemetryAttributeMap(rows.DataPoints[0].Attributes.ToSlice())
+	assert.Equal(t, "Users", batchAttributes[pgmesh.AttributeStoreName].AsString())
+	assert.Equal(t, "CopyUsers", batchAttributes[pgmesh.AttributeQueryName].AsString())
+	assert.Equal(t, "default", batchAttributes[pgmesh.AttributeReplicaSet].AsString())
+	assert.Equal(t, "primary", batchAttributes[pgmesh.AttributeRouteMode].AsString())
+	assert.Equal(
+		t,
+		string(pgmesh.CopyBatchFlushReasonExplicit),
+		batchAttributes[pgmesh.AttributeCopyBatchFlushReason].AsString(),
+	)
+
+	submissions := telemetryIntHistogram(t, metrics, pgmesh.MetricCopyBatchSubmissions)
+	require.Len(t, submissions.DataPoints, 1)
+	assert.Equal(t, int64(1), submissions.DataPoints[0].Sum)
+	flushes := telemetryIntCounter(t, metrics, pgmesh.MetricCopyBatchFlushes)
+	require.Len(t, flushes.DataPoints, 1)
+	assert.Equal(t, int64(1), flushes.DataPoints[0].Value)
+	copyDuration := telemetryHistogram(t, metrics, pgmesh.MetricCopyBatchDuration)
+	require.Len(t, copyDuration.DataPoints, 1)
+	assert.Equal(t, uint64(1), copyDuration.DataPoints[0].Count)
+	queueDuration := telemetryHistogram(t, metrics, pgmesh.MetricCopyQueueDuration)
+	require.Len(t, queueDuration.DataPoints, 1)
+	assert.Equal(t, uint64(1), queueDuration.DataPoints[0].Count)
+}
+
 func TestGeneratedRoutingOnlyShardArgument(t *testing.T) {
 	t.Parallel()
 
@@ -1425,6 +1722,48 @@ func telemetryHistogram(
 	}
 	require.FailNow(t, "metric not found", name)
 	return metricdata.Histogram[float64]{}
+}
+
+func telemetryIntHistogram(
+	t *testing.T,
+	metrics metricdata.ResourceMetrics,
+	name string,
+) metricdata.Histogram[int64] {
+	t.Helper()
+
+	for _, scope := range metrics.ScopeMetrics {
+		for _, measurement := range scope.Metrics {
+			if measurement.Name != name {
+				continue
+			}
+			histogram, ok := measurement.Data.(metricdata.Histogram[int64])
+			require.True(t, ok)
+			return histogram
+		}
+	}
+	require.FailNow(t, "metric not found", name)
+	return metricdata.Histogram[int64]{}
+}
+
+func telemetryIntCounter(
+	t *testing.T,
+	metrics metricdata.ResourceMetrics,
+	name string,
+) metricdata.Sum[int64] {
+	t.Helper()
+
+	for _, scope := range metrics.ScopeMetrics {
+		for _, measurement := range scope.Metrics {
+			if measurement.Name != name {
+				continue
+			}
+			counter, ok := measurement.Data.(metricdata.Sum[int64])
+			require.True(t, ok)
+			return counter
+		}
+	}
+	require.FailNow(t, "metric not found", name)
+	return metricdata.Sum[int64]{}
 }
 
 func TestGeneratedStoreBehavior(t *testing.T) {

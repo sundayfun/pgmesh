@@ -84,6 +84,9 @@ type storeOptions struct {
 	factories      struct {
 		Commands func(Commands) Commands
 	}
+	copyBatching struct {
+		copyCommandUsers *pgmesh.CopyBatchConfig
+	}
 }
 
 // StoreOption customizes a generated store.
@@ -181,13 +184,38 @@ func NewStore(ctx context.Context, topology Topology, options ...StoreOption) (S
 }
 
 type meshStore[SK any] struct {
-	mesh   *pgmesh.Mesh[*readQueries, *queryStore, SK]
-	groups struct {
+	mesh                  *pgmesh.Mesh[*readQueries, *queryStore, SK]
+	copyCommandUsersBatch *copyCommandUsersBatchState
+	groups                struct {
 		Commands Commands
 	}
 }
 
 var _ Store = (*meshStore[uint8])(nil)
+
+func (q *meshStore[SK]) initializeCopyBatchers(options storeOptions) error {
+	copyCommandUsersBatchConfig := pgmesh.CopyBatchConfig{}
+	copyCommandUsersBatchEnabled := false
+	if configured := options.copyBatching.copyCommandUsers; configured != nil {
+		copyCommandUsersBatchConfig = *configured
+		copyCommandUsersBatchEnabled = true
+	}
+	copyCommandUsersBatch := &copyCommandUsersBatchState{
+		enabled:  copyCommandUsersBatchEnabled,
+		batchers: make(map[string]*pgmesh.CopyBatcher[*db.CopyCommandUsersParams]),
+	}
+	for _, shard := range q.mesh.AllShards() {
+		batcher, err := pgmesh.NewCopyBatcher[*db.CopyCommandUsersParams](copyCommandUsersBatchConfig, func(ctx context.Context, rows []*db.CopyCommandUsersParams) (int64, error) {
+			return shard.Write().CopyCommandUsers(ctx, rows)
+		}, q.mesh.CopyBatchObserver("Commands", "CopyCommandUsers", shard.Name()))
+		if err != nil {
+			return fmt.Errorf("configure CopyCommandUsers copy batching: %w", err)
+		}
+		copyCommandUsersBatch.batchers[shard.Name()] = batcher
+	}
+	q.copyCommandUsersBatch = copyCommandUsersBatch
+	return nil
+}
 
 type groupedMeshStore[SK any] struct {
 	store *meshStore[SK]
@@ -244,6 +272,9 @@ func (c singletonTopology) buildStore(_ context.Context, options storeOptions) (
 		return nil, err
 	}
 	store := &meshStore[uint8]{mesh: mesh}
+	if err := store.initializeCopyBatchers(options); err != nil {
+		return nil, err
+	}
 	store.initializeGroups(options)
 	return store, nil
 }

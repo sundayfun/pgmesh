@@ -445,6 +445,42 @@ func TestPostgresTopologyIntegration(t *testing.T) {
 			},
 		},
 		{
+			name: "async copy batches concurrent callers and drains explicitly",
+			run: func(t *testing.T, h *postgresCase) {
+				queries := h.newShardedStore(
+					t,
+					fixture.WithCopyUsersBatching(pgmesh.CopyBatchConfig{
+						BatchSize:    8,
+						FlushTimeout: time.Hour,
+					}),
+				)
+				futures := make([]*pgmesh.Future[int64], 0, 4)
+				for index, tenantID := range []int64{2, 3, 4, 5} {
+					futures = append(futures, queries.Users().EnqueueCopyUsers(
+						t.Context(),
+						[]*fixture.CopyUsersT{{
+							TenantKey: tenantKey(tenantID),
+							ID:        int64(270 + index),
+							Name:      "async-copy",
+						}},
+					))
+				}
+				require.NoError(t, queries.Users().FlushCopyUsers(t.Context()))
+				for _, future := range futures {
+					count, err := future.Await(t.Context())
+					require.NoError(t, err)
+					assert.Equal(t, int64(1), count)
+				}
+
+				assert.Equal(t, "async-copy", h.userName(t, "shard0-primary", 270, 2))
+				assert.Equal(t, "async-copy", h.userName(t, "shard0-mirror", 270, 2))
+				assert.Equal(t, "async-copy", h.userName(t, "shard1-primary", 271, 3))
+				assert.Equal(t, "async-copy", h.userName(t, "shard0-primary", 272, 4))
+				assert.Equal(t, "async-copy", h.userName(t, "shard0-mirror", 272, 4))
+				assert.Equal(t, "async-copy", h.userName(t, "shard1-primary", 273, 5))
+			},
+		},
+		{
 			name: "grouped many routes lookup values and restores input order",
 			run: func(t *testing.T, h *postgresCase) {
 				h.insert(t, "shard0-primary", 240, 2, "even-zero")

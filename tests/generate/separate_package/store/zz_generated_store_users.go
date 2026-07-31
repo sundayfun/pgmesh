@@ -76,6 +76,18 @@ func (arg *UpdateUserNameT) sqlcParams() *db.UpdateUserNameParams {
 	}
 }
 
+type copyUsersBatchState struct {
+	mu       sync.Mutex
+	enabled  bool
+	batchers map[string]*pgmesh.CopyBatcher[*db.CopyUsersParams]
+}
+
+// WithCopyUsersBatching enables asynchronous micro-batching for CopyUsers.
+func WithCopyUsersBatching(config pgmesh.CopyBatchConfig) StoreOption {
+	configured := config
+	return func(options *storeOptions) { options.copyBatching.copyUsers = &configured }
+}
+
 // UsersReader exposes read queries in the Users store group.
 type UsersReader interface {
 	// GetUser executes the generated GetUser query.
@@ -90,6 +102,10 @@ type UsersReader interface {
 type UsersWriter interface {
 	// CopyUsers executes the generated CopyUsers query.
 	CopyUsers(ctx context.Context, arg []*CopyUsersT, storeOptions ...QueryOption) (int64, error)
+	// EnqueueCopyUsers accepts rows for asynchronous COPY.
+	EnqueueCopyUsers(ctx context.Context, arg []*CopyUsersT) *pgmesh.Future[int64]
+	// FlushCopyUsers drains asynchronous submissions accepted before its barrier.
+	FlushCopyUsers(ctx context.Context) error
 	// CreateUser executes the generated CreateUser query.
 	CreateUser(ctx context.Context, arg *CreateUserT, storeOptions ...QueryOption) (*User, error)
 	// DeleteAllUsers executes the generated DeleteAllUsers query.
@@ -115,6 +131,20 @@ func (q *telemetryUsersStore[SK]) CopyUsers(ctx context.Context, arg []*CopyUser
 	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "CopyUsers", pgmesh.QueryKindWrite)
 	defer func() { storeSpan.End(err) }()
 	return q.target.CopyUsers(ctx, arg, storeOptions...)
+}
+
+func (q *telemetryUsersStore[SK]) EnqueueCopyUsers(ctx context.Context, arg []*CopyUsersT) *pgmesh.Future[int64] {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "EnqueueCopyUsers", pgmesh.QueryKindWrite)
+	future := q.target.EnqueueCopyUsers(ctx, arg)
+	return pgmesh.RunFuture(func() (int64, error) {
+		count, err := future.Await(context.Background())
+		storeSpan.End(err)
+		return count, err
+	})
+}
+
+func (q *telemetryUsersStore[SK]) FlushCopyUsers(ctx context.Context) error {
+	return q.target.FlushCopyUsers(ctx)
 }
 
 func (q *telemetryUsersStore[SK]) CreateUser(ctx context.Context, arg *CreateUserT, storeOptions ...QueryOption) (result *User, err error) {
@@ -254,6 +284,127 @@ func (q *groupedMeshStore[SK]) CopyUsers(ctx context.Context, arg []*CopyUsersT,
 		result += copyResult.count
 	}
 	return result, err
+}
+
+// EnqueueCopyUsers accepts rows for asynchronous COPY.
+func (q *groupedMeshStore[SK]) EnqueueCopyUsers(ctx context.Context, arg []*CopyUsersT) *pgmesh.Future[int64] {
+	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "EnqueueCopyUsers", pgmesh.QueryKindWrite)
+	finish := func(future *pgmesh.Future[int64]) *pgmesh.Future[int64] {
+		return pgmesh.RunFuture(func() (int64, error) {
+			count, err := future.Await(context.Background())
+			querySpan.End(err)
+			return count, err
+		})
+	}
+
+	type asyncCopyShardGroup struct {
+		shard   *pgmesh.Shard[*readQueries, *queryStore]
+		args    []*db.CopyUsersParams
+		batcher *pgmesh.CopyBatcher[*db.CopyUsersParams]
+	}
+	groupsByName := make(map[string]*asyncCopyShardGroup)
+	for inputIndex, item := range arg {
+		var shardKey SK
+		if q.store.resolver != nil {
+			shardKey = q.store.resolver.TenantKey(item.TenantKey)
+		}
+		shard, routeErr := q.store.mesh.Shard(shardKey)
+		if routeErr != nil {
+			err := fmt.Errorf("route EnqueueCopyUsers input %d: %w", inputIndex, routeErr)
+			return finish(pgmesh.ResolvedFuture[int64](0, err))
+		}
+		shardGroup := groupsByName[shard.Name()]
+		if shardGroup == nil {
+			shardGroup = &asyncCopyShardGroup{shard: shard, args: make([]*db.CopyUsersParams, 0)}
+			groupsByName[shard.Name()] = shardGroup
+		}
+		shardGroup.args = append(shardGroup.args, item.sqlcParams())
+	}
+	groups := make([]*asyncCopyShardGroup, 0, len(groupsByName))
+	for _, shard := range q.store.mesh.AllShards() {
+		if shardGroup := groupsByName[shard.Name()]; shardGroup != nil {
+			groups = append(groups, shardGroup)
+		}
+	}
+	querySpan.SetMultiRoute(pgmesh.RouteModePrimary)
+	if len(groups) == 0 {
+		return finish(pgmesh.ResolvedFuture[int64](0, nil))
+	}
+	state := q.store.copyUsersBatch
+	state.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		state.mu.Unlock()
+		return finish(pgmesh.ResolvedFuture[int64](0, err))
+	}
+	for _, shardGroup := range groups {
+		shardGroup.batcher = state.batchers[shardGroup.shard.Name()]
+		if shardGroup.batcher == nil {
+			state.mu.Unlock()
+			err := fmt.Errorf("query EnqueueCopyUsers has no copy batcher for replica set %q", shardGroup.shard.Name())
+			return finish(pgmesh.ResolvedFuture[int64](0, err))
+		}
+	}
+	acceptedContext := context.WithoutCancel(ctx)
+	type asyncCopyResult struct {
+		shardName string
+		future    *pgmesh.Future[int64]
+	}
+	asyncResults := make([]asyncCopyResult, 0, len(groups))
+	for _, shardGroup := range groups {
+		var future *pgmesh.Future[int64]
+		if state.enabled {
+			future = shardGroup.batcher.Submit(acceptedContext, shardGroup.args)
+		} else {
+			future = shardGroup.batcher.SubmitImmediate(acceptedContext, shardGroup.args)
+		}
+		asyncResults = append(asyncResults, asyncCopyResult{shardName: shardGroup.shard.Name(), future: future})
+	}
+	state.mu.Unlock()
+
+	combined := pgmesh.RunFuture(func() (int64, error) {
+		var count int64
+		copyErrors := make([]error, 0, len(asyncResults))
+		for _, asyncResult := range asyncResults {
+			shardCount, err := asyncResult.future.Await(context.Background())
+			if err != nil {
+				copyErrors = append(copyErrors, fmt.Errorf("query CopyUsers on replica set %q: %w", asyncResult.shardName, err))
+				continue
+			}
+			count += shardCount
+		}
+		if err := errors.Join(copyErrors...); err != nil {
+			return 0, err
+		}
+		return count, nil
+	})
+	return finish(combined)
+}
+
+// FlushCopyUsers drains asynchronous submissions accepted before its barrier.
+func (q *groupedMeshStore[SK]) FlushCopyUsers(ctx context.Context) error {
+	state := q.store.copyUsersBatch
+	state.mu.Lock()
+	type copyFlushResult struct {
+		shardName string
+		future    *pgmesh.Future[struct{}]
+	}
+	flushes := make([]copyFlushResult, 0, len(q.store.mesh.AllShards()))
+	for _, shard := range q.store.mesh.AllShards() {
+		if batcher := state.batchers[shard.Name()]; batcher != nil {
+			flushes = append(flushes, copyFlushResult{shardName: shard.Name(), future: batcher.FlushAsync()})
+		}
+	}
+	state.mu.Unlock()
+	flushErrors := make([]error, 0, len(flushes))
+	for _, flushResult := range flushes {
+		if _, err := flushResult.future.Await(ctx); err != nil {
+			flushErrors = append(flushErrors, fmt.Errorf("flush CopyUsers on replica set %q: %w", flushResult.shardName, err))
+			if ctx.Err() != nil {
+				break
+			}
+		}
+	}
+	return errors.Join(flushErrors...)
 }
 
 // CreateUser executes the generated query on its target shard.

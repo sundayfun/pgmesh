@@ -26,6 +26,25 @@ const MetricQueryDuration = "pgmesh.query.duration"
 // method durations in seconds. Its count reports completed wrapper throughput.
 const MetricStoreDuration = "pgmesh.store.duration"
 
+// MetricCopyBatchRows is the OpenTelemetry histogram of attempted rows per
+// physical COPY operation.
+const MetricCopyBatchRows = "pgmesh.copy.batch.rows"
+
+// MetricCopyBatchSubmissions is the OpenTelemetry histogram of logical
+// submission fragments represented in each physical COPY operation.
+const MetricCopyBatchSubmissions = "pgmesh.copy.batch.submissions"
+
+// MetricCopyBatchFlushes counts physical COPY operations by flush reason.
+const MetricCopyBatchFlushes = "pgmesh.copy.batch.flushes"
+
+// MetricCopyBatchDuration is the OpenTelemetry histogram of physical COPY
+// execution durations in seconds.
+const MetricCopyBatchDuration = "pgmesh.copy.batch.duration"
+
+// MetricCopyQueueDuration is the OpenTelemetry histogram of time from the
+// oldest row's admission until physical COPY execution begins, in seconds.
+const MetricCopyQueueDuration = "pgmesh.copy.queue.duration"
+
 // OpenTelemetry attribute keys recorded on store and routed query telemetry.
 const (
 	// AttributeStoreName identifies the generated store query group.
@@ -41,6 +60,9 @@ const (
 	// AttributeInternalStoreExecuted reports whether a factory wrapper entered
 	// the generated internal store implementation.
 	AttributeInternalStoreExecuted = "pgmesh.store.internal_executed"
+	// AttributeCopyBatchFlushReason identifies why a physical COPY batch was
+	// made ready for execution.
+	AttributeCopyBatchFlushReason = "pgmesh.copy.batch.flush_reason"
 )
 
 // QueryKind classifies a routed query as a read or write.
@@ -68,10 +90,15 @@ const (
 )
 
 type queryTelemetry struct {
-	tracer        trace.Tracer
-	storeDuration metric.Float64Histogram
-	queryDuration metric.Float64Histogram
-	logger        *slog.Logger
+	tracer               trace.Tracer
+	storeDuration        metric.Float64Histogram
+	queryDuration        metric.Float64Histogram
+	copyBatchRows        metric.Int64Histogram
+	copyBatchSubmissions metric.Int64Histogram
+	copyBatchFlushes     metric.Int64Counter
+	copyBatchDuration    metric.Float64Histogram
+	copyQueueDuration    metric.Float64Histogram
+	logger               *slog.Logger
 }
 
 // QuerySpan records tracing, metrics, and logging for one routed query. The
@@ -161,7 +188,112 @@ func (t *queryTelemetry) setMeterProvider(provider metric.MeterProvider) error {
 		return err
 	}
 	t.storeDuration = storeDuration
+	copyBatchRows, err := meter.Int64Histogram(
+		MetricCopyBatchRows,
+		metric.WithDescription("Attempted rows per physical pgmesh COPY operation"),
+		metric.WithUnit("{row}"),
+		metric.WithExplicitBucketBoundaries(
+			1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096,
+		),
+	)
+	if err != nil {
+		return err
+	}
+	t.copyBatchRows = copyBatchRows
+	copyBatchSubmissions, err := meter.Int64Histogram(
+		MetricCopyBatchSubmissions,
+		metric.WithDescription("Logical submission fragments per physical pgmesh COPY operation"),
+		metric.WithUnit("{submission}"),
+		metric.WithExplicitBucketBoundaries(1, 2, 4, 8, 16, 32, 64, 128, 256),
+	)
+	if err != nil {
+		return err
+	}
+	t.copyBatchSubmissions = copyBatchSubmissions
+	copyBatchFlushes, err := meter.Int64Counter(
+		MetricCopyBatchFlushes,
+		metric.WithDescription("Physical pgmesh COPY operations by flush reason"),
+		metric.WithUnit("{batch}"),
+	)
+	if err != nil {
+		return err
+	}
+	t.copyBatchFlushes = copyBatchFlushes
+	copyBatchDuration, err := meter.Float64Histogram(
+		MetricCopyBatchDuration,
+		metric.WithDescription("Duration of physical pgmesh COPY operations"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(
+			0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10,
+		),
+	)
+	if err != nil {
+		return err
+	}
+	t.copyBatchDuration = copyBatchDuration
+	copyQueueDuration, err := meter.Float64Histogram(
+		MetricCopyQueueDuration,
+		metric.WithDescription("Time from oldest row admission until physical pgmesh COPY execution"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(
+			0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5,
+		),
+	)
+	if err != nil {
+		return err
+	}
+	t.copyQueueDuration = copyQueueDuration
 	return nil
+}
+
+// CopyBatchObserver returns an observer used by generated stores to record one
+// metric point for every physical COPY operation on a replica set.
+func (m *Mesh[R, W, SK]) CopyBatchObserver(
+	storeName string,
+	queryName string,
+	replicaSet string,
+) CopyBatchObserver {
+	baseAttributes := []attribute.KeyValue{
+		attribute.String(AttributeStoreName, storeName),
+		attribute.String(AttributeQueryName, queryName),
+		attribute.String(AttributeQueryKind, string(QueryKindWrite)),
+		attribute.String(AttributeReplicaSet, replicaSet),
+		attribute.String(AttributeRouteMode, string(RouteModePrimary)),
+	}
+	return func(ctx context.Context, observation CopyBatchObservation) {
+		attributes := append(
+			append([]attribute.KeyValue(nil), baseAttributes...),
+			attribute.String(
+				AttributeCopyBatchFlushReason,
+				string(observation.FlushReason),
+			),
+		)
+		if observation.Err != nil {
+			attributes = append(attributes, semconv.ErrorType(observation.Err))
+		}
+		recordOptions := metric.WithAttributes(attributes...)
+		m.telemetry.copyBatchRows.Record(
+			ctx,
+			int64(observation.Rows),
+			recordOptions,
+		)
+		m.telemetry.copyBatchSubmissions.Record(
+			ctx,
+			int64(observation.Submissions),
+			recordOptions,
+		)
+		m.telemetry.copyBatchFlushes.Add(ctx, 1, recordOptions)
+		m.telemetry.copyBatchDuration.Record(
+			ctx,
+			observation.Duration.Seconds(),
+			recordOptions,
+		)
+		m.telemetry.copyQueueDuration.Record(
+			ctx,
+			observation.QueueDuration.Seconds(),
+			recordOptions,
+		)
+	}
 }
 
 // StartStoreSpan starts telemetry around a factory-wrapped generated store

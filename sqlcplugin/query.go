@@ -95,7 +95,7 @@ type routeOperand struct {
 type shardArgWrapper struct {
 	name                 string
 	shardKeyType         string
-	fields               []argument
+	fields               []goField
 	sqlcArg              queryValue
 	sqlcFieldExpressions map[string]string
 }
@@ -225,6 +225,33 @@ func collectStoreGroups(queries []generatedQuery, opts *options) ([]storeGroup, 
 		}
 	}
 	for _, query := range queries {
+		if query.command == cmdCopyFrom {
+			for _, method := range []string{
+				copyEnqueueMethodName(query.methodName),
+				copyFlushMethodName(query.methodName),
+			} {
+				for _, candidate := range queries {
+					if candidate.methodName == method {
+						return nil, fmt.Errorf(
+							"copy query %s generates method %s that conflicts with query %s",
+							query.methodName,
+							method,
+							candidate.methodName,
+						)
+					}
+				}
+			}
+			option := copyBatchOptionName(query.methodName)
+			if previous, exists := declarations[option]; exists {
+				return nil, fmt.Errorf(
+					"copy query %s generates declaration %s that conflicts with %s",
+					query.methodName,
+					option,
+					previous,
+				)
+			}
+			declarations[option] = "copy batch option for " + query.methodName
+		}
 		if query.storeParamAlias != nil {
 			if previous, exists := declarations[query.storeParamAlias.name]; exists {
 				return nil, fmt.Errorf(
@@ -267,6 +294,47 @@ func storeFactoryOptionName(group string) string {
 
 func storeTelemetryTypeName(group string) string {
 	return "telemetry" + group + "Store"
+}
+
+func copyBatchOptionName(query string) string {
+	return "With" + query + "Batching"
+}
+
+func copyEnqueueMethodName(query string) string {
+	return "Enqueue" + query
+}
+
+func copyFlushMethodName(query string) string {
+	return "Flush" + query
+}
+
+func copyBatchStateTypeName(query string) string {
+	return lowerTitle(query) + "BatchState"
+}
+
+func copyBatchStateFieldName(query string) string {
+	return lowerTitle(query) + "Batch"
+}
+
+func copyBatchConfigFieldName(query string) string {
+	return lowerTitle(query)
+}
+
+func copyQueries(queries []generatedQuery) []generatedQuery {
+	result := make([]generatedQuery, 0)
+	for _, query := range queries {
+		if query.command == cmdCopyFrom && query.store != "" {
+			result = append(result, query)
+		}
+	}
+	return result
+}
+
+func copyRowType(query *generatedQuery) string {
+	if len(query.params) < 2 {
+		return ""
+	}
+	return strings.TrimPrefix(query.params[1].typ, "[]")
 }
 
 func sameRouteSignature(left, right shardRoute) bool {
@@ -1458,7 +1526,7 @@ func wrapGroupedManyShardOperands(query *generatedQuery, opts *options) error {
 	usedFields := map[string]string{
 		wrapper.shardKeyType: "shard key",
 	}
-	appendField := func(name, typ, source string) error {
+	appendField := func(name, dbName, typ, source string) error {
 		if previous, exists := usedFields[name]; exists {
 			return fmt.Errorf(
 				"query %s shard parameter wrapper field %s conflicts between %s and %s",
@@ -1469,7 +1537,12 @@ func wrapGroupedManyShardOperands(query *generatedQuery, opts *options) error {
 			)
 		}
 		usedFields[name] = source
-		wrapper.fields = append(wrapper.fields, argument{name: name, typ: typ})
+		wrapper.fields = append(wrapper.fields, goField{
+			name:   name,
+			dbName: dbName,
+			typ:    typ,
+			column: nil,
+		})
 		return nil
 	}
 
@@ -1478,6 +1551,7 @@ func wrapGroupedManyShardOperands(query *generatedQuery, opts *options) error {
 	} else {
 		if err := appendField(
 			spec.lookupField,
+			spec.lookupDBName,
 			spec.elementType,
 			"SQL list parameter "+spec.parameterDBName,
 		); err != nil {
@@ -1510,7 +1584,7 @@ func wrapShardParameters(query *generatedQuery, opts *options) error {
 	usedFields := map[string]string{
 		wrapper.shardKeyType: "shard key",
 	}
-	appendField := func(name, typ, source string) error {
+	appendField := func(name, dbName, typ, source string) error {
 		if previous, exists := usedFields[name]; exists {
 			return fmt.Errorf(
 				"query %s shard parameter wrapper field %s conflicts between %s and %s",
@@ -1521,7 +1595,12 @@ func wrapShardParameters(query *generatedQuery, opts *options) error {
 			)
 		}
 		usedFields[name] = source
-		wrapper.fields = append(wrapper.fields, argument{name: name, typ: typ})
+		wrapper.fields = append(wrapper.fields, goField{
+			name:   name,
+			dbName: dbName,
+			typ:    typ,
+			column: nil,
+		})
 		return nil
 	}
 
@@ -1538,7 +1617,12 @@ func wrapShardParameters(query *generatedQuery, opts *options) error {
 					wrapper.shardKeyType + "." + operand.fieldName
 				continue
 			}
-			if err := appendField(field.name, field.typ, "SQL parameter "+field.dbName); err != nil {
+			if err := appendField(
+				field.name,
+				field.dbName,
+				field.typ,
+				"SQL parameter "+field.dbName,
+			); err != nil {
 				return err
 			}
 			wrapper.sqlcFieldExpressions[field.name] = "arg." + field.name
@@ -1553,7 +1637,12 @@ func wrapShardParameters(query *generatedQuery, opts *options) error {
 				)
 				continue
 			}
-			if err := appendField(field.name, field.typ, "SQL parameter "+field.dbName); err != nil {
+			if err := appendField(
+				field.name,
+				field.dbName,
+				field.typ,
+				"SQL parameter "+field.dbName,
+			); err != nil {
 				return err
 			}
 			callArgs = append(callArgs, "arg."+field.name)
@@ -1566,10 +1655,17 @@ func wrapShardParameters(query *generatedQuery, opts *options) error {
 			)
 		} else {
 			fieldName := structName(arg.dbName, opts)
+			dbName := arg.dbName
 			if fieldName == "" {
 				fieldName = structName(arg.name, opts)
+				dbName = arg.name
 			}
-			if err := appendField(fieldName, arg.defineType(opts), "SQL parameter "+arg.dbName); err != nil {
+			if err := appendField(
+				fieldName,
+				dbName,
+				arg.defineType(opts),
+				"SQL parameter "+arg.dbName,
+			); err != nil {
 				return err
 			}
 			callArgs = append(callArgs, "arg."+fieldName)

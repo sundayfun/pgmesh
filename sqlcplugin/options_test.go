@@ -93,6 +93,7 @@ func TestParseOptionsDefaults(t *testing.T) {
 	assert.Equal(t, defaultResolver, opts.ResolverInterfaceName)
 	assert.Equal(t, defaultShardedNew, opts.ShardedConstructor)
 	assert.False(t, opts.ExportSQLCTypes)
+	assert.False(t, opts.EmitJSONTags)
 }
 
 func TestParseOptionsRetainsSupportedCustomizations(t *testing.T) {
@@ -117,6 +118,7 @@ func TestParseOptionsRetainsSupportedCustomizations(t *testing.T) {
 		"emit_pointers_for_null_types":true,
 		"emit_pointers_for_null_enum_types":false,
 		"emit_exact_table_names":true,
+		"emit_json_tags":true,
 		"rename":{"users":"People"},
 		"overrides":[
 			{"db_type":"text","go_type":"string"},
@@ -143,6 +145,7 @@ func TestParseOptionsRetainsSupportedCustomizations(t *testing.T) {
 	require.NotNil(t, opts.EmitPointersForNullEnumType)
 	assert.False(t, *opts.EmitPointersForNullEnumType)
 	assert.True(t, opts.EmitExactTableNames)
+	assert.True(t, opts.EmitJSONTags)
 	assert.Equal(t, map[string]string{"users": "People"}, opts.Rename)
 	require.Len(t, opts.Overrides, 2)
 	assert.Equal(t, "string", opts.Overrides[0].typeName)
