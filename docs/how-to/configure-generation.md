@@ -132,8 +132,8 @@ Repeated topology options append in call order. Common scalar store options,
 such as `WithLogger` and `With<Group>Factory`, use the last supplied value.
 Group factories run once after successful topology construction, and a nil
 factory leaves that group unwrapped. A configured group is retained behind a
-generated telemetry facade that records `pgmesh.store.duration`, emits a
-`pgmesh.store.*` span, and reports `pgmesh.store.internal_executed`.
+generated telemetry facade that records `pgmesh.query.wrapper.duration`, emits a
+`pgmesh.query.wrapper.*` span, and reports `pgmesh.wrapper.delegated`.
 Option constructors clone slice inputs, and `NewStore` reports nil topology,
 singleton, sharded, or store options as configuration errors.
 

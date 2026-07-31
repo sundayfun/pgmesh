@@ -47,9 +47,9 @@ pgmesh never shuts down a provider.
 
 | Metric | Type | Unit | Meaning |
 | --- | --- | --- | --- |
-| `pgmesh.store.duration` | Histogram | `s` | End-to-end duration of a configured factory wrapper |
-| `pgmesh.operation.duration` | Histogram | `s` | End-to-end duration of one logical generated-method call, including routing and fan-out aggregation |
-| `pgmesh.query.duration` | Histogram | `s` | Duration of one physical database execution on one selected shard and node |
+| `pgmesh.query.wrapper.duration` | Histogram | `s` | End-to-end duration of a configured factory wrapper |
+| `pgmesh.query.logical.duration` | Histogram | `s` | End-to-end duration of one logical generated-method call, including routing and fan-out aggregation |
+| `pgmesh.query.physical.duration` | Histogram | `s` | Duration of one physical database execution on one selected shard and node |
 | `pgmesh.copy.batch.rows` | Histogram | `{row}` | Attempted rows in each physical COPY batch |
 | `pgmesh.copy.batch.submissions` | Histogram | `{submission}` | Logical submission fragments represented in each physical COPY batch |
 | `pgmesh.copy.batch.flushes` | Counter | `{batch}` | Physical COPY batches, grouped by flush reason |
@@ -58,11 +58,11 @@ pgmesh never shuts down a provider.
 
 Each histogram's count reports throughput for its layer:
 
-- Use `pgmesh.operation.duration` for application-call QPS and latency.
-- Use `pgmesh.query.duration` for database QPS and latency, grouped by
+- Use `pgmesh.query.logical.duration` for application-call QPS and latency.
+- Use `pgmesh.query.physical.duration` for database QPS and latency, grouped by
   `pgmesh.shard.name`, `pgmesh.node.name`, and optionally query name.
-- Use `pgmesh.store.duration` with
-  `pgmesh.store.internal_executed=false` for factory short-circuits such as
+- Use `pgmesh.query.wrapper.duration` with
+  `pgmesh.wrapper.delegated=false` for factory short-circuits such as
   cache hits, and `true` for delegations.
 
 Duration histograms use explicit bucket boundaries of `0.001`, `0.005`,
@@ -76,14 +76,15 @@ that [preserves UTF-8 OpenTelemetry names][prometheus-otel-utf8], using
 `NoTranslation` or an equivalent configuration. PromQL quotes metric and label
 names containing dots. Classic histogram components keep the structural
 `_count`, `_sum`, and `_bucket` suffixes; for example,
-`pgmesh.query.duration` produces `pgmesh.query.duration_count`. All latency
-results below are in seconds.
+`pgmesh.query.physical.duration` produces
+`pgmesh.query.physical.duration_count`. All latency results below are in
+seconds.
 
 Logical application-call QPS, by generated method:
 
 ```promql
 sum by ("pgmesh.store.name", "pgmesh.query.name") (
-  rate({"pgmesh.operation.duration_count"}[5m])
+  rate({"pgmesh.query.logical.duration_count"}[5m])
 )
 ```
 
@@ -93,7 +94,7 @@ Logical application-call p95 latency:
 histogram_quantile(
   0.95,
   sum by (le, "pgmesh.store.name", "pgmesh.query.name") (
-    rate({"pgmesh.operation.duration_bucket"}[5m])
+    rate({"pgmesh.query.logical.duration_bucket"}[5m])
   )
 )
 ```
@@ -102,7 +103,7 @@ Physical database QPS for every shard and selected node:
 
 ```promql
 sum by ("pgmesh.shard.name", "pgmesh.node.name", "pgmesh.node.role") (
-  rate({"pgmesh.query.duration_count"}[5m])
+  rate({"pgmesh.query.physical.duration_count"}[5m])
 )
 ```
 
@@ -112,7 +113,7 @@ Physical database p95 latency for every shard and selected node:
 histogram_quantile(
   0.95,
   sum by (le, "pgmesh.shard.name", "pgmesh.node.name", "pgmesh.node.role") (
-    rate({"pgmesh.query.duration_bucket"}[5m])
+    rate({"pgmesh.query.physical.duration_bucket"}[5m])
   )
 )
 ```
@@ -128,7 +129,7 @@ Read-replica QPS can use the same throughput query with
 ```promql
 sum by ("pgmesh.shard.name", "pgmesh.node.name") (
   rate({
-    "pgmesh.query.duration_count",
+    "pgmesh.query.physical.duration_count",
     "pgmesh.node.role"="read_replica"
   }[5m])
 )
@@ -141,7 +142,7 @@ histogram_quantile(
   0.95,
   sum by (le, "pgmesh.shard.name", "pgmesh.node.name") (
     rate({
-      "pgmesh.query.duration_bucket",
+      "pgmesh.query.physical.duration_bucket",
       "pgmesh.node.role"="read_replica"
     }[5m])
   )
@@ -159,7 +160,7 @@ sum by (
   "pgmesh.node.name"
 ) (
   rate({
-    "pgmesh.query.duration_count",
+    "pgmesh.query.physical.duration_count",
     "error.type"=~".+"
   }[5m])
 )
@@ -170,7 +171,7 @@ sum by (
   "pgmesh.shard.name",
   "pgmesh.node.name"
 ) (
-  rate({"pgmesh.query.duration_count"}[5m])
+  rate({"pgmesh.query.physical.duration_count"}[5m])
 )
 ```
 
@@ -178,11 +179,11 @@ Physical executions per logical operation, grouped by generated method:
 
 ```promql
 sum by ("pgmesh.store.name", "pgmesh.query.name") (
-  rate({"pgmesh.query.duration_count"}[5m])
+  rate({"pgmesh.query.physical.duration_count"}[5m])
 )
 /
 sum by ("pgmesh.store.name", "pgmesh.query.name") (
-  rate({"pgmesh.operation.duration_count"}[5m])
+  rate({"pgmesh.query.logical.duration_count"}[5m])
 )
 ```
 
@@ -195,13 +196,13 @@ Factory-wrapper short-circuit percentage, such as cache hits:
 100 *
 sum by ("pgmesh.store.name", "pgmesh.query.name") (
   rate({
-    "pgmesh.store.duration_count",
-    "pgmesh.store.internal_executed"="false"
+    "pgmesh.query.wrapper.duration_count",
+    "pgmesh.wrapper.delegated"="false"
   }[5m])
 )
 /
 sum by ("pgmesh.store.name", "pgmesh.query.name") (
-  rate({"pgmesh.store.duration_count"}[5m])
+  rate({"pgmesh.query.wrapper.duration_count"}[5m])
 )
 ```
 
@@ -220,9 +221,22 @@ See Prometheus's [`histogram_quantile` documentation][histogram-quantile] for
 other quantiles and aggregation patterns. Keep `le` in the `sum by` clause
 when querying these classic histograms.
 
-### Operation attributes
+### Wrapper attributes
 
-`pgmesh.operation.duration` records a stable, bounded set of dimensions:
+`pgmesh.query.wrapper.duration` exists only for a configured application
+wrapper:
+
+| Attribute | Value |
+| --- | --- |
+| `pgmesh.store.name` | Generated query-group name |
+| `pgmesh.query.name` | Generated query method name |
+| `pgmesh.query.kind` | `read` or `write` |
+| `pgmesh.wrapper.delegated` | Whether the wrapper invoked the generated logical query |
+| `error.type` | Error type on failure; omitted on success |
+
+### Logical-query attributes
+
+`pgmesh.query.logical.duration` records a stable, bounded set of dimensions:
 
 | Attribute | Value |
 | --- | --- |
@@ -233,13 +247,14 @@ when querying these classic histograms.
 | `pgmesh.route.scope` | `single`, `fanout`, or `unresolved` |
 | `error.type` | Error type on failure; omitted on success |
 
-Operation spans and logs also include `pgmesh.route.shard_count`. The count is
+Logical spans and logs also include `pgmesh.route.shard_count`. The count is
 not a metric dimension because arbitrary fan-out sizes would create unnecessary
 time series.
 
 ### Physical-query attributes
 
-Every `pgmesh.query.duration` data point identifies the exact selected target:
+Every `pgmesh.query.physical.duration` data point identifies the exact selected
+target:
 
 | Attribute | Value |
 | --- | --- |
@@ -282,25 +297,25 @@ average number of logical submissions coalesced into each batch.
 
 ## Traces
 
-Factory wrappers use `pgmesh.store.<Group>.<QueryName>`, logical operations use
-`pgmesh.operation.<Group>.<QueryName>`, and physical queries use
-`pgmesh.query.<Group>.<QueryName>`. A cache miss produces:
+Factory wrappers use `pgmesh.query.wrapper.<Group>.<QueryName>`, logical calls
+use `pgmesh.query.logical.<Group>.<QueryName>`, and physical executions use
+`pgmesh.query.physical.<Group>.<QueryName>`. A cache miss produces:
 
 ```text
-pgmesh.store.Users.GetUser
-└── pgmesh.operation.Users.GetUser
-    └── pgmesh.query.Users.GetUser
+pgmesh.query.wrapper.Users.GetUser
+└── pgmesh.query.logical.Users.GetUser
+    └── pgmesh.query.physical.Users.GetUser
         └── optional instrumented pgx/database span
 ```
 
-A cache hit produces only the store span. A group without a factory begins at
-the operation span. A fan-out operation has one query child per physical shard
+A cache hit produces only the wrapper span. A group without a factory begins at
+the logical span. A fan-out logical call has one physical child per shard
 execution.
 
-Routing and database errors mark both the affected physical query and its
-logical operation as errors. A mirror error is reflected on the primary write
-query and operation because synchronous mirrors are part of that selected
-write target.
+Routing and database errors mark both the affected physical execution and its
+logical call as errors. A mirror error is reflected on the primary write
+execution and logical call because synchronous mirrors are part of that
+selected write target.
 
 ## Asynchronous and batch behavior
 
@@ -309,16 +324,16 @@ telemetry when queued because their database work finishes later through
 result callbacks. Instrument batch consumption separately when those methods
 need latency or outcome telemetry.
 
-Generated `Enqueue<CopyQuery>` operation spans and metrics end when their future
+Generated `Enqueue<CopyQuery>` logical spans and metrics end when their future
 resolves, so they include queueing and COPY time. Each physical COPY execution
-also emits its own query span and metric point. `Flush<CopyQuery>` is a control
-operation and emits no operation point of its own; a batch forced by it emits
-query and COPY metrics, with COPY flush reason `explicit`.
+also emits its own physical span and metric point. `Flush<CopyQuery>` is a
+control call and emits no logical point of its own; a batch forced by it emits
+physical-query and COPY metrics, with COPY flush reason `explicit`.
 
-Wrappers must delegate with the received context to preserve the store →
-operation → query hierarchy and the internal-execution marker. Pass the
-physical query context to the database call so separately instrumented pgx
-spans appear beneath the correct pgmesh query span.
+Wrappers must delegate with the received context to preserve the wrapper →
+logical → physical hierarchy and the delegation marker. Pass the physical
+query context to the database call so separately instrumented pgx spans appear
+beneath the correct pgmesh physical span.
 
 [histogram-quantile]: https://prometheus.io/docs/prometheus/latest/querying/functions/#histogram_quantile
 [prometheus-otel-utf8]: https://prometheus.io/docs/guides/opentelemetry/#utf-8

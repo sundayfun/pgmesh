@@ -283,9 +283,9 @@ func TestPostgresStoreFactoryIntegration(t *testing.T) {
 	querySpans := make([]sdktrace.ReadOnlySpan, 0, 4)
 	for _, span := range spans {
 		switch {
-		case strings.HasPrefix(span.Name(), "pgmesh.store."):
+		case strings.HasPrefix(span.Name(), "pgmesh.query.wrapper."):
 			storeSpans = append(storeSpans, span)
-		case strings.HasPrefix(span.Name(), "pgmesh.query."):
+		case strings.HasPrefix(span.Name(), "pgmesh.query.physical."):
 			querySpans = append(querySpans, span)
 		default:
 			require.Failf(t, "unexpected span", "%s", span.Name())
@@ -302,7 +302,7 @@ func TestPostgresStoreFactoryIntegration(t *testing.T) {
 		for _, item := range span.Attributes() {
 			attributes[string(item.Key)] = item.Value.AsInterface()
 		}
-		executed, ok := attributes[pgmesh.AttributeInternalStoreExecuted].(bool)
+		executed, ok := attributes[pgmesh.AttributeWrapperDelegated].(bool)
 		require.True(t, ok)
 		internalExecutions = append(internalExecutions, executed)
 		if !executed {
@@ -316,7 +316,7 @@ func TestPostgresStoreFactoryIntegration(t *testing.T) {
 		for _, item := range span.Attributes() {
 			attributes[string(item.Key)] = item.Value.AsInterface()
 		}
-		assert.NotContains(t, attributes, pgmesh.AttributeInternalStoreExecuted)
+		assert.NotContains(t, attributes, pgmesh.AttributeWrapperDelegated)
 		assert.Contains(t, storeSpanIDs, span.Parent().SpanID().String())
 	}
 }

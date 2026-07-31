@@ -17,19 +17,21 @@ import (
 
 const instrumentationName = "github.com/sundayfun/pgmesh"
 
-// MetricOperationDuration is the OpenTelemetry histogram of logical generated
-// operation durations in seconds. Fan-out work contributes one data point.
-const MetricOperationDuration = "pgmesh.operation.duration"
+// MetricQueryWrapperDuration is the OpenTelemetry histogram of optional
+// application wrapper durations in seconds. Its count reports completed
+// wrapper throughput.
+const MetricQueryWrapperDuration = "pgmesh.query.wrapper.duration"
 
-// MetricQueryDuration is the OpenTelemetry histogram of physical database
-// query durations in seconds. Its count reports per-node query throughput. The
-// configured MeterProvider owns exporting and shutdown; pgmesh never shuts it
-// down.
-const MetricQueryDuration = "pgmesh.query.duration"
+// MetricQueryLogicalDuration is the OpenTelemetry histogram of logical
+// generated-query durations in seconds. Fan-out work contributes one data
+// point.
+const MetricQueryLogicalDuration = "pgmesh.query.logical.duration"
 
-// MetricStoreDuration is the OpenTelemetry histogram of factory-wrapped store
-// method durations in seconds. Its count reports completed wrapper throughput.
-const MetricStoreDuration = "pgmesh.store.duration"
+// MetricQueryPhysicalDuration is the OpenTelemetry histogram of physical
+// database-query durations in seconds. Its count reports per-node query
+// throughput. The configured MeterProvider owns exporting and shutdown;
+// pgmesh never shuts it down.
+const MetricQueryPhysicalDuration = "pgmesh.query.physical.duration"
 
 // MetricCopyBatchRows is the OpenTelemetry histogram of attempted rows per
 // physical COPY operation.
@@ -74,9 +76,9 @@ const (
 	// AttributeRouteShardCount reports the number of physical shard executions
 	// on spans and logs. It is excluded from metrics to bound cardinality.
 	AttributeRouteShardCount = "pgmesh.route.shard_count"
-	// AttributeInternalStoreExecuted reports whether a factory wrapper entered
-	// the generated internal store implementation.
-	AttributeInternalStoreExecuted = "pgmesh.store.internal_executed"
+	// AttributeWrapperDelegated reports whether an application wrapper
+	// delegated to the generated logical query implementation.
+	AttributeWrapperDelegated = "pgmesh.wrapper.delegated"
 	// AttributeCopyBatchFlushReason identifies why a physical COPY batch was
 	// made ready for execution.
 	AttributeCopyBatchFlushReason = "pgmesh.copy.batch.flush_reason"
@@ -122,9 +124,9 @@ const (
 
 type queryTelemetry struct {
 	tracer               trace.Tracer
-	storeDuration        metric.Float64Histogram
-	operationDuration    metric.Float64Histogram
-	queryDuration        metric.Float64Histogram
+	wrapperDuration      metric.Float64Histogram
+	logicalDuration      metric.Float64Histogram
+	physicalDuration     metric.Float64Histogram
 	copyBatchRows        metric.Int64Histogram
 	copyBatchSubmissions metric.Int64Histogram
 	copyBatchFlushes     metric.Int64Counter
@@ -137,28 +139,28 @@ type queryTelemetry struct {
 // generated store calls End exactly once; callers using StartSpan directly must
 // do the same.
 type QuerySpan struct {
-	ctx               context.Context
-	span              trace.Span
-	tracer            trace.Tracer
-	operationDuration metric.Float64Histogram
-	queryDuration     metric.Float64Histogram
-	started           time.Time
-	attributes        []attribute.KeyValue
-	storeName         string
-	queryName         string
-	kind              QueryKind
-	routeMode         RouteMode
-	routeScope        RouteScope
-	shardCount        int
-	logger            *slog.Logger
-	logAttributes     []slog.Attr
+	ctx              context.Context
+	span             trace.Span
+	tracer           trace.Tracer
+	logicalDuration  metric.Float64Histogram
+	physicalDuration metric.Float64Histogram
+	started          time.Time
+	attributes       []attribute.KeyValue
+	storeName        string
+	queryName        string
+	kind             QueryKind
+	routeMode        RouteMode
+	routeScope       RouteScope
+	shardCount       int
+	logger           *slog.Logger
+	logAttributes    []slog.Attr
 }
 
 // PhysicalQuerySpan records one database execution on one resolved node.
 type PhysicalQuerySpan struct {
 	ctx              context.Context
 	span             trace.Span
-	queryDuration    metric.Float64Histogram
+	physicalDuration metric.Float64Histogram
 	started          time.Time
 	metricAttributes []attribute.KeyValue
 	logger           *slog.Logger
@@ -168,14 +170,14 @@ type PhysicalQuerySpan struct {
 // StoreSpan records tracing, metrics, and logging around one factory-wrapped
 // generated store method. The generated wrapper calls End exactly once.
 type StoreSpan struct {
-	ctx           context.Context
-	span          trace.Span
-	storeDuration metric.Float64Histogram
-	started       time.Time
-	attributes    []attribute.KeyValue
-	logger        *slog.Logger
-	logAttributes []slog.Attr
-	execution     *internalExecutionState
+	ctx             context.Context
+	span            trace.Span
+	wrapperDuration metric.Float64Histogram
+	started         time.Time
+	attributes      []attribute.KeyValue
+	logger          *slog.Logger
+	logAttributes   []slog.Attr
+	execution       *internalExecutionState
 }
 
 type internalExecutionState struct {
@@ -215,9 +217,9 @@ func (t *queryTelemetry) setMeterProvider(provider metric.MeterProvider) error {
 		instrumentationName,
 		metric.WithSchemaURL(semconv.SchemaURL),
 	)
-	operationDuration, err := meter.Float64Histogram(
-		MetricOperationDuration,
-		metric.WithDescription("Duration of logical pgmesh operations"),
+	logicalDuration, err := meter.Float64Histogram(
+		MetricQueryLogicalDuration,
+		metric.WithDescription("Duration of logical pgmesh generated-query calls"),
 		metric.WithUnit("s"),
 		metric.WithExplicitBucketBoundaries(
 			0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10,
@@ -226,9 +228,9 @@ func (t *queryTelemetry) setMeterProvider(provider metric.MeterProvider) error {
 	if err != nil {
 		return err
 	}
-	t.operationDuration = operationDuration
-	queryDuration, err := meter.Float64Histogram(
-		MetricQueryDuration,
+	t.logicalDuration = logicalDuration
+	physicalDuration, err := meter.Float64Histogram(
+		MetricQueryPhysicalDuration,
 		metric.WithDescription("Duration of physical pgmesh database queries"),
 		metric.WithUnit("s"),
 		metric.WithExplicitBucketBoundaries(
@@ -238,10 +240,10 @@ func (t *queryTelemetry) setMeterProvider(provider metric.MeterProvider) error {
 	if err != nil {
 		return err
 	}
-	t.queryDuration = queryDuration
-	storeDuration, err := meter.Float64Histogram(
-		MetricStoreDuration,
-		metric.WithDescription("Duration of factory-wrapped pgmesh store methods"),
+	t.physicalDuration = physicalDuration
+	wrapperDuration, err := meter.Float64Histogram(
+		MetricQueryWrapperDuration,
+		metric.WithDescription("Duration of application-wrapped pgmesh query methods"),
 		metric.WithUnit("s"),
 		metric.WithExplicitBucketBoundaries(
 			0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10,
@@ -250,7 +252,7 @@ func (t *queryTelemetry) setMeterProvider(provider metric.MeterProvider) error {
 	if err != nil {
 		return err
 	}
-	t.storeDuration = storeDuration
+	t.wrapperDuration = wrapperDuration
 	copyBatchRows, err := meter.Int64Histogram(
 		MetricCopyBatchRows,
 		metric.WithDescription("Attempted rows per physical pgmesh COPY operation"),
@@ -379,7 +381,7 @@ func (m *Mesh[R, W, SK]) StartStoreSpan(
 	}
 	ctx, span := m.telemetry.tracer.Start(
 		ctx,
-		"pgmesh.store."+storeName+"."+queryName,
+		"pgmesh.query.wrapper."+storeName+"."+queryName,
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(attributes...),
 	)
@@ -389,12 +391,12 @@ func (m *Mesh[R, W, SK]) StartStoreSpan(
 	}
 	ctx = context.WithValue(ctx, internalExecutionContextKey{}, execution)
 	return ctx, &StoreSpan{
-		ctx:           ctx,
-		span:          span,
-		storeDuration: m.telemetry.storeDuration,
-		started:       time.Now(),
-		attributes:    attributes,
-		logger:        m.telemetry.logger,
+		ctx:             ctx,
+		span:            span,
+		wrapperDuration: m.telemetry.wrapperDuration,
+		started:         time.Now(),
+		attributes:      attributes,
+		logger:          m.telemetry.logger,
 		logAttributes: []slog.Attr{
 			slog.String("store_name", storeName),
 			slog.String("query_name", queryName),
@@ -427,25 +429,25 @@ func (m *Mesh[R, W, SK]) StartSpan(
 	}
 	ctx, span := m.telemetry.tracer.Start(
 		ctx,
-		"pgmesh.operation."+storeName+"."+queryName,
+		"pgmesh.query.logical."+storeName+"."+queryName,
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(attributes...),
 	)
 	return ctx, &QuerySpan{
-		ctx:               ctx,
-		span:              span,
-		tracer:            m.telemetry.tracer,
-		operationDuration: m.telemetry.operationDuration,
-		queryDuration:     m.telemetry.queryDuration,
-		started:           time.Now(),
-		attributes:        attributes[:3],
-		storeName:         storeName,
-		queryName:         queryName,
-		kind:              kind,
-		routeMode:         RouteModeUnresolved,
-		routeScope:        RouteScopeUnresolved,
-		shardCount:        0,
-		logger:            m.telemetry.logger,
+		ctx:              ctx,
+		span:             span,
+		tracer:           m.telemetry.tracer,
+		logicalDuration:  m.telemetry.logicalDuration,
+		physicalDuration: m.telemetry.physicalDuration,
+		started:          time.Now(),
+		attributes:       attributes[:3],
+		storeName:        storeName,
+		queryName:        queryName,
+		kind:             kind,
+		routeMode:        RouteModeUnresolved,
+		routeScope:       RouteScopeUnresolved,
+		shardCount:       0,
+		logger:           m.telemetry.logger,
 		logAttributes: []slog.Attr{
 			slog.String("store_name", storeName),
 			slog.String("query_name", queryName),
@@ -492,7 +494,7 @@ func (s *QuerySpan) StartQuerySpan(
 	return startPhysicalQuerySpan(
 		ctx,
 		s.tracer,
-		s.queryDuration,
+		s.physicalDuration,
 		s.logger,
 		s.storeName,
 		s.queryName,
@@ -515,7 +517,7 @@ func (m *Mesh[R, W, SK]) StartQuerySpan(
 	return startPhysicalQuerySpan(
 		ctx,
 		m.telemetry.tracer,
-		m.telemetry.queryDuration,
+		m.telemetry.physicalDuration,
 		m.telemetry.logger,
 		storeName,
 		queryName,
@@ -528,7 +530,7 @@ func (m *Mesh[R, W, SK]) StartQuerySpan(
 func startPhysicalQuerySpan(
 	ctx context.Context,
 	tracer trace.Tracer,
-	queryDuration metric.Float64Histogram,
+	physicalDuration metric.Float64Histogram,
 	logger *slog.Logger,
 	storeName string,
 	queryName string,
@@ -576,14 +578,14 @@ func startPhysicalQuerySpan(
 	//nolint:spancheck // The returned wrapper transfers ownership to the generated caller.
 	ctx, span := tracer.Start(
 		ctx,
-		"pgmesh.query."+storeName+"."+queryName,
+		"pgmesh.query.physical."+storeName+"."+queryName,
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(spanAttributes...),
 	)
 	return ctx, &PhysicalQuerySpan{
 		ctx:              ctx,
 		span:             span,
-		queryDuration:    queryDuration,
+		physicalDuration: physicalDuration,
 		started:          time.Now(),
 		metricAttributes: metricAttributes,
 		logger:           logger,
@@ -607,7 +609,7 @@ func (s *QuerySpan) End(err error) {
 		metricAttributes = append(metricAttributes, errorType)
 	}
 	recordOptions := metric.WithAttributes(metricAttributes...)
-	s.operationDuration.Record(s.ctx, duration.Seconds(), recordOptions)
+	s.logicalDuration.Record(s.ctx, duration.Seconds(), recordOptions)
 	if s.logger != nil && s.logger.Enabled(s.ctx, slog.LevelDebug) {
 		logAttributes := append(
 			append([]slog.Attr(nil), s.logAttributes...),
@@ -620,7 +622,7 @@ func (s *QuerySpan) End(err error) {
 		if err != nil {
 			logAttributes = append(logAttributes, slog.Any("error", err))
 		}
-		s.logger.LogAttrs(s.ctx, slog.LevelDebug, "pgmesh operation completed", logAttributes...)
+		s.logger.LogAttrs(s.ctx, slog.LevelDebug, "pgmesh logical query completed", logAttributes...)
 	}
 	s.span.End()
 }
@@ -636,7 +638,7 @@ func (s *PhysicalQuerySpan) End(err error) {
 		s.span.SetStatus(codes.Error, err.Error())
 		metricAttributes = append(metricAttributes, errorType)
 	}
-	s.queryDuration.Record(
+	s.physicalDuration.Record(
 		s.ctx,
 		duration.Seconds(),
 		metric.WithAttributes(metricAttributes...),
@@ -650,7 +652,7 @@ func (s *PhysicalQuerySpan) End(err error) {
 		if err != nil {
 			logAttributes = append(logAttributes, slog.Any("error", err))
 		}
-		s.logger.LogAttrs(s.ctx, slog.LevelDebug, "pgmesh query completed", logAttributes...)
+		s.logger.LogAttrs(s.ctx, slog.LevelDebug, "pgmesh physical query completed", logAttributes...)
 	}
 	s.span.End()
 }
@@ -660,15 +662,15 @@ func (s *PhysicalQuerySpan) End(err error) {
 // caller-owned.
 func (s *StoreSpan) End(err error) {
 	duration := time.Since(s.started)
-	internalStoreExecuted := s.execution.executed.Load()
-	executionAttribute := attribute.Bool(
-		AttributeInternalStoreExecuted,
-		internalStoreExecuted,
+	delegated := s.execution.executed.Load()
+	delegatedAttribute := attribute.Bool(
+		AttributeWrapperDelegated,
+		delegated,
 	)
-	s.span.SetAttributes(executionAttribute)
+	s.span.SetAttributes(delegatedAttribute)
 	metricAttributes := append(
 		append([]attribute.KeyValue(nil), s.attributes...),
-		executionAttribute,
+		delegatedAttribute,
 	)
 	if err != nil {
 		errorType := semconv.ErrorType(err)
@@ -678,18 +680,18 @@ func (s *StoreSpan) End(err error) {
 		metricAttributes = append(metricAttributes, errorType)
 	}
 	recordOptions := metric.WithAttributes(metricAttributes...)
-	s.storeDuration.Record(s.ctx, duration.Seconds(), recordOptions)
+	s.wrapperDuration.Record(s.ctx, duration.Seconds(), recordOptions)
 	if s.logger != nil && s.logger.Enabled(s.ctx, slog.LevelDebug) {
 		logAttributes := append(
 			append([]slog.Attr(nil), s.logAttributes...),
-			slog.Bool("internal_store_executed", internalStoreExecuted),
+			slog.Bool("wrapper_delegated", delegated),
 			slog.Bool("failed", err != nil),
 			slog.Duration("duration", duration),
 		)
 		if err != nil {
 			logAttributes = append(logAttributes, slog.Any("error", err))
 		}
-		s.logger.LogAttrs(s.ctx, slog.LevelDebug, "pgmesh store completed", logAttributes...)
+		s.logger.LogAttrs(s.ctx, slog.LevelDebug, "pgmesh query wrapper completed", logAttributes...)
 	}
 	s.span.End()
 }
