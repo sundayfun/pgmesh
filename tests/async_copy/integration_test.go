@@ -27,7 +27,7 @@ func TestPostgresAsyncCopyBatchesAndFlushes(t *testing.T) {
 
 	futures := make([]*pgmesh.Future[int64], 0, 4)
 	for index, tenantID := range []int64{2, 3, 4, 5} {
-		futures = append(futures, queries.Users().EnqueueCopyUsers(
+		futures = append(futures, queries.Users().CopyUsersAsync(
 			t.Context(),
 			[]*fixture.CopyUsersT{{
 				TenantKey: storetest.TenantKey(tenantID),

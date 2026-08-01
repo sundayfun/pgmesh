@@ -374,12 +374,12 @@ func TestGenerateRejectsInvalidStoreGroups(t *testing.T) {
 			want: "conflicts with constructor",
 		},
 		{
-			name: "copy enqueue method",
+			name: "copy async method",
 			request: request(
 				copyQuery("CopyUsers", "Users"),
-				query("EnqueueCopyUsers", "Users"),
+				query("CopyUsersAsync", "Users"),
 			),
-			want: "generates method EnqueueCopyUsers",
+			want: "generates method CopyUsersAsync",
 		},
 		{
 			name: "copy batching option",
@@ -2039,7 +2039,7 @@ func TestGenerateGroupedCopyWithRoutingOnlyOperand(t *testing.T) {
 	assert.Contains(t, got, "target.CopyUsers(queryCtx, shardGroup.args)")
 	assert.Contains(t, got, `q.store.mesh.StartSpan(ctx, "Users", "CopyUsers", pgmesh.QueryKindWrite)`)
 	assert.Contains(t, got, "func WithCopyUsersBatching(config pgmesh.CopyBatchConfig) StoreOption")
-	assert.Contains(t, got, "EnqueueCopyUsers(ctx context.Context, arg []*CopyUsersT) *pgmesh.Future[int64]")
+	assert.Contains(t, got, "CopyUsersAsync(ctx context.Context, arg []*CopyUsersT) *pgmesh.Future[int64]")
 	assert.Contains(t, got, "FlushCopyUsers(ctx context.Context) error")
 	assert.Contains(t, got, "future = shardGroup.batcher.Submit(acceptedContext, shardGroup.args)")
 	assert.Contains(t, got, "future = shardGroup.batcher.SubmitImmediate(acceptedContext, shardGroup.args)")
@@ -2080,7 +2080,7 @@ func TestGenerateGroupedCopyWithScalarParameter(t *testing.T) {
 	assert.Contains(t, got, "args  []int64")
 	assert.Contains(t, got, "shardGroup.args = append(shardGroup.args, item.Entity.ID)")
 	assert.Contains(t, got, "batchers map[string]*pgmesh.CopyBatcher[int64]")
-	assert.Contains(t, got, "EnqueueCopyIDs(ctx context.Context, arg []CopyIDsT) *pgmesh.Future[int64]")
+	assert.Contains(t, got, "CopyIDsAsync(ctx context.Context, arg []CopyIDsT) *pgmesh.Future[int64]")
 }
 
 func TestGenerateSupportsAllNodeLevelCommands(t *testing.T) {
@@ -2192,9 +2192,9 @@ func TestGenerateSupportsAllNodeLevelCommands(t *testing.T) {
 		}
 		if test.command == ":copyfrom" {
 			assert.Contains(t, got, "func WithQuery5Batching(config pgmesh.CopyBatchConfig) StoreOption")
-			assert.Contains(t, got, "EnqueueQuery5(ctx context.Context, id []int64) *pgmesh.Future[int64]")
+			assert.Contains(t, got, "Query5Async(ctx context.Context, id []int64) *pgmesh.Future[int64]")
 			assert.Contains(t, got, "FlushQuery5(ctx context.Context) error")
-			asyncBody := generatedMethodBody(t, got, "groupedMeshStore[SK]", "EnqueueQuery5")
+			asyncBody := generatedMethodBody(t, got, "groupedMeshStore[SK]", "Query5Async")
 			assert.Contains(t, asyncBody, "groups := []*asyncCopyShardGroup{{shard: shard, args: id}}")
 		}
 	}

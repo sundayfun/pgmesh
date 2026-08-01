@@ -6,12 +6,12 @@ flush APIs. For a query named `CopyAccounts`, pgmesh generates:
 | API | Purpose |
 | --- | --- |
 | `CopyAccounts` | Route and execute the rows synchronously |
-| `EnqueueCopyAccounts` | Accept rows and return a `*pgmesh.Future[int64]` |
+| `CopyAccountsAsync` | Accept rows and return a `*pgmesh.Future[int64]` |
 | `FlushCopyAccounts` | Force partial batches to execute and wait at a barrier |
 | `WithCopyAccountsBatching` | Configure per-shard batch size and timeout |
 
 The suffix always follows the sqlc query name, so `CopyEvents` generates
-`EnqueueCopyEvents`, `FlushCopyEvents`, and `WithCopyEventsBatching`.
+`CopyEventsAsync`, `FlushCopyEvents`, and `WithCopyEventsBatching`.
 
 ## Define the COPY query
 
@@ -47,19 +47,19 @@ Zero leaves timed batches unbounded. A zero `FlushTimeout` uses
 `pgmesh.DefaultCopyBatchFlushTimeout`; negative values make store construction
 fail.
 
-## Enqueue, flush, and await
+## Submit, flush, and await
 
-Keep every returned future. `EnqueueCopyAccounts` preflights routing and then
+Keep every returned future. `CopyAccountsAsync` preflights routing and then
 allows rows from concurrent callers to share physical COPY batches on the same
 shard:
 
 ```go
-first := store.Accounts().EnqueueCopyAccounts(ctx, []*db.CopyAccountsT{{
+first := store.Accounts().CopyAccountsAsync(ctx, []*db.CopyAccountsT{{
     TenantKey:   db.TenantKey{TenantID: 20},
     ID:          1001,
     DisplayName: "Ada",
 }})
-second := store.Accounts().EnqueueCopyAccounts(ctx, []*db.CopyAccountsT{{
+second := store.Accounts().CopyAccountsAsync(ctx, []*db.CopyAccountsT{{
     TenantKey:   db.TenantKey{TenantID: 100},
     ID:          1002,
     DisplayName: "Linus",
@@ -96,7 +96,7 @@ future.
 3. Returns joined, shard-labeled execution errors from that barrier.
 
 Submissions accepted after the barrier are not included. Flush does not close
-the batcher and producers may enqueue more work afterward. Stop producers
+the batcher and producers may submit more work afterward. Stop producers
 before using it as a graceful-shutdown drain:
 
 ```go
@@ -115,7 +115,7 @@ timeout.
 
 If the flush context expires, only that wait stops. Accepted database work
 continues, and a later `Await` or flush can observe its result. Similarly,
-canceling the enqueue context after acceptance or canceling an `Await` does not
+canceling the async call context after acceptance or canceling an `Await` does not
 cancel the write.
 
 ## Operational boundaries
@@ -124,7 +124,7 @@ cancel the write.
 - Different physical shards batch and execute independently.
 - One submission may split across shards or `BatchSize` boundaries; its future
   resolves only after every fragment completes.
-- Without `WithCopyAccountsBatching`, enqueue remains asynchronous but each
+- Without `WithCopyAccountsBatching`, `CopyAccountsAsync` remains asynchronous but each
   call uses an immediate physical COPY per targeted shard. Flush still acts as
   a barrier for outstanding work.
 - Async COPY cannot use a transaction or `QueryOption`. Use synchronous
@@ -146,4 +146,4 @@ does not add a separate logical-query duration point.
 
 See the runnable
 [`05-async-copy-batching` example](../../examples/05-async-copy-batching)
-for a complete `EnqueueCopyAccounts` → `FlushCopyAccounts` → `Await` flow.
+for a complete `CopyAccountsAsync` → `FlushCopyAccounts` → `Await` flow.

@@ -65,17 +65,17 @@ func run(ctx context.Context) error {
 	accounts := store.Accounts()
 	baseID := time.Now().UnixNano()
 	futures := []*pgmesh.Future[int64]{
-		accounts.EnqueueCopyAccounts(ctx, []*sharded.CopyAccountsT{{
+		accounts.CopyAccountsAsync(ctx, []*sharded.CopyAccountsT{{
 			TenantKey:   sharded.TenantKey{TenantID: 20},
 			ID:          baseID,
 			DisplayName: "first shard-zero submission",
 		}}),
-		accounts.EnqueueCopyAccounts(ctx, []*sharded.CopyAccountsT{{
+		accounts.CopyAccountsAsync(ctx, []*sharded.CopyAccountsT{{
 			TenantKey:   sharded.TenantKey{TenantID: 21},
 			ID:          baseID + 1,
 			DisplayName: "second shard-zero submission",
 		}}),
-		accounts.EnqueueCopyAccounts(ctx, []*sharded.CopyAccountsT{{
+		accounts.CopyAccountsAsync(ctx, []*sharded.CopyAccountsT{{
 			TenantKey:   sharded.TenantKey{TenantID: 100},
 			ID:          baseID + 2,
 			DisplayName: "shard-one submission",

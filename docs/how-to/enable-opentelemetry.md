@@ -324,7 +324,7 @@ telemetry when queued because their database work finishes later through
 result callbacks. Instrument batch consumption separately when those methods
 need latency or outcome telemetry.
 
-Generated `Enqueue<CopyQuery>` logical spans and metrics end when their future
+Generated `<CopyQuery>Async` logical spans and metrics end when their future
 resolves, so they include queueing and COPY time. Each physical COPY execution
 also emits its own physical span and metric point. `Flush<CopyQuery>` is a
 control call and emits no logical point of its own; a batch forced by it emits
