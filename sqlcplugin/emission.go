@@ -317,12 +317,12 @@ func writeCopyTelemetryMethods(
 	params []argument,
 	wrapperType string,
 ) {
-	enqueue := copyEnqueueMethodName(query.methodName)
+	async := copyAsyncMethodName(query.methodName)
 	flush := copyFlushMethodName(query.methodName)
 	fmt.Fprintf(out, "func (%s *%s[SK]) %s(%s) *pgmesh.Future[int64] {\n",
 		defaultReceiverName,
 		wrapperType,
-		enqueue,
+		async,
 		paramsSignature(params),
 	)
 	fmt.Fprintf(
@@ -330,14 +330,14 @@ func writeCopyTelemetryMethods(
 		"\tctx, storeSpan := %s.store.mesh.StartStoreSpan(ctx, %q, %q, %s)\n",
 		defaultReceiverName,
 		query.store,
-		enqueue,
+		async,
 		queryKindConstant(query.kind),
 	)
 	fmt.Fprintf(
 		out,
 		"\tfuture := %s.target.%s(%s)\n",
 		defaultReceiverName,
-		enqueue,
+		async,
 		strings.Join(argumentNames(params), ", "),
 	)
 	out.WriteString("\treturn pgmesh.RunFuture(func() (int64, error) {\n")
@@ -405,12 +405,12 @@ func writeStoreInterfaceMethod(out *bytes.Buffer, opts *options, query *generate
 	fmt.Fprintf(
 		out,
 		"\t// %s accepts rows for asynchronous COPY.\n",
-		copyEnqueueMethodName(query.methodName),
+		copyAsyncMethodName(query.methodName),
 	)
 	fmt.Fprintf(
 		out,
 		"\t%s(%s) *pgmesh.Future[int64]\n",
-		copyEnqueueMethodName(query.methodName),
+		copyAsyncMethodName(query.methodName),
 		paramsSignature(params),
 	)
 	fmt.Fprintf(
@@ -1780,25 +1780,25 @@ func writeGroupedCopyQueryMethod(out *bytes.Buffer, query *generatedQuery) {
 }
 
 func writeAsyncCopyQueryMethods(out *bytes.Buffer, query *generatedQuery) {
-	writeAsyncCopyEnqueueMethod(out, query)
+	writeAsyncCopyMethod(out, query)
 	writeAsyncCopyFlushMethod(out, query)
 }
 
-func writeAsyncCopyEnqueueMethod(out *bytes.Buffer, query *generatedQuery) {
-	enqueue := copyEnqueueMethodName(query.methodName)
+func writeAsyncCopyMethod(out *bytes.Buffer, query *generatedQuery) {
+	async := copyAsyncMethodName(query.methodName)
 	inputName := query.storeParams[1].name
 	stateField := copyBatchStateFieldName(query.methodName)
 	fmt.Fprintf(
 		out,
 		"// %s accepts rows for asynchronous COPY.\n",
-		enqueue,
+		async,
 	)
 	fmt.Fprintf(
 		out,
 		"func (%s *%s[SK]) %s(%s) *pgmesh.Future[int64] {\n",
 		defaultReceiverName,
 		defaultGroupType,
-		enqueue,
+		async,
 		paramsSignature(query.storeParams),
 	)
 	fmt.Fprintf(
@@ -1806,7 +1806,7 @@ func writeAsyncCopyEnqueueMethod(out *bytes.Buffer, query *generatedQuery) {
 		"\tctx, querySpan := %s.store.mesh.StartSpan(ctx, %q, %q, %s)\n",
 		defaultReceiverName,
 		query.store,
-		enqueue,
+		async,
 		queryKindConstant(query.kind),
 	)
 	out.WriteString("\tfinish := func(future *pgmesh.Future[int64]) *pgmesh.Future[int64] {\n")
@@ -1848,7 +1848,7 @@ func writeAsyncCopyEnqueueMethod(out *bytes.Buffer, query *generatedQuery) {
 		fmt.Fprintf(
 			out,
 			"\t\t\terr := fmt.Errorf(%q, inputIndex, routeErr)\n",
-			"route "+enqueue+" input %d: %w",
+			"route "+async+" input %d: %w",
 		)
 		out.WriteString("\t\t\treturn finish(pgmesh.ResolvedFuture[int64](0, err))\n")
 		out.WriteString("\t\t}\n")
@@ -1900,7 +1900,7 @@ func writeAsyncCopyEnqueueMethod(out *bytes.Buffer, query *generatedQuery) {
 	fmt.Fprintf(
 		out,
 		"\t\t\terr := fmt.Errorf(%q, shardGroup.shard.Name())\n",
-		"query "+enqueue+" has no copy batcher for replica set %q",
+		"query "+async+" has no copy batcher for replica set %q",
 	)
 	out.WriteString("\t\t\treturn finish(pgmesh.ResolvedFuture[int64](0, err))\n")
 	out.WriteString("\t\t}\n")

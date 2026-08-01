@@ -1117,7 +1117,7 @@ func TestGeneratedAsyncCopyCoalescesConcurrentCallersPerPhysicalShard(t *testing
 	var callers sync.WaitGroup
 	for index := range 8 {
 		callers.Go(func() {
-			futures <- store.Users().EnqueueCopyUsers(t.Context(), []*CopyUsersT{{
+			futures <- store.Users().CopyUsersAsync(t.Context(), []*CopyUsersT{{
 				TenantKey: TenantKey{TenantID: 0},
 				ID:        int64(100 + index),
 				Name:      fmt.Sprintf("user-%d", index),
@@ -1158,7 +1158,7 @@ func TestGeneratedAsyncCopyPartitionsAndSplitsSubmissions(t *testing.T) {
 		}),
 	)
 
-	future := store.Users().EnqueueCopyUsers(t.Context(), []*CopyUsersT{
+	future := store.Users().CopyUsersAsync(t.Context(), []*CopyUsersT{
 		{TenantKey: TenantKey{TenantID: 0}, ID: 10},
 		{TenantKey: TenantKey{TenantID: 2}, ID: 12},
 		{TenantKey: TenantKey{TenantID: 0}, ID: 14},
@@ -1195,10 +1195,10 @@ func TestGeneratedAsyncCopyImmediateFallbackAndCancellation(t *testing.T) {
 		nil,
 	)
 
-	first := store.Users().EnqueueCopyUsers(t.Context(), []*CopyUsersT{{
+	first := store.Users().CopyUsersAsync(t.Context(), []*CopyUsersT{{
 		TenantKey: TenantKey{TenantID: 0}, ID: 10,
 	}})
-	second := store.Users().EnqueueCopyUsers(t.Context(), []*CopyUsersT{{
+	second := store.Users().CopyUsersAsync(t.Context(), []*CopyUsersT{{
 		TenantKey: TenantKey{TenantID: 2}, ID: 12,
 	}})
 	for _, future := range []*pgmesh.Future[int64]{first, second} {
@@ -1219,7 +1219,7 @@ func TestGeneratedAsyncCopyImmediateFallbackAndCancellation(t *testing.T) {
 		nil,
 		WithCopyUsersBatching(pgmesh.CopyBatchConfig{FlushTimeout: time.Hour}),
 	)
-	pending := batched.Users().EnqueueCopyUsers(t.Context(), []*CopyUsersT{{
+	pending := batched.Users().CopyUsersAsync(t.Context(), []*CopyUsersT{{
 		TenantKey: TenantKey{TenantID: 0}, ID: 20,
 	}})
 	canceled, cancel := context.WithCancel(t.Context())
@@ -1252,7 +1252,7 @@ func TestGeneratedAsyncCopyPreflightAndSharedFailures(t *testing.T) {
 			WithCopyUsersBatching(pgmesh.CopyBatchConfig{}),
 		)
 
-		future := store.Users().EnqueueCopyUsers(t.Context(), []*CopyUsersT{
+		future := store.Users().CopyUsersAsync(t.Context(), []*CopyUsersT{
 			{TenantKey: TenantKey{TenantID: 0}, ID: 10},
 			{TenantKey: TenantKey{TenantID: 4}, ID: 14},
 		})
@@ -1280,10 +1280,10 @@ func TestGeneratedAsyncCopyPreflightAndSharedFailures(t *testing.T) {
 			WithCopyUsersBatching(pgmesh.CopyBatchConfig{BatchSize: 2}),
 		)
 
-		first := store.Users().EnqueueCopyUsers(t.Context(), []*CopyUsersT{{
+		first := store.Users().CopyUsersAsync(t.Context(), []*CopyUsersT{{
 			TenantKey: TenantKey{TenantID: 0}, ID: 10,
 		}})
-		second := store.Users().EnqueueCopyUsers(t.Context(), []*CopyUsersT{{
+		second := store.Users().CopyUsersAsync(t.Context(), []*CopyUsersT{{
 			TenantKey: TenantKey{TenantID: 2}, ID: 12,
 		}})
 		for _, future := range []*pgmesh.Future[int64]{first, second} {
@@ -1328,7 +1328,7 @@ func TestGeneratedAsyncCopyTelemetryEndsWhenFutureResolves(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	future := store.Users().EnqueueCopyUsers(t.Context(), []*CopyUsersT{{
+	future := store.Users().CopyUsersAsync(t.Context(), []*CopyUsersT{{
 		TenantKey: TenantKey{TenantID: 2}, ID: 20,
 	}})
 	assert.Empty(t, recorder.Ended())
@@ -1347,7 +1347,7 @@ func TestGeneratedAsyncCopyTelemetryEndsWhenFutureResolves(t *testing.T) {
 	assert.Equal(t, "default", attributes[attribute.Key(pgmesh.AttributeShardName)].AsString())
 	assert.Equal(t, "primary", attributes[attribute.Key(pgmesh.AttributeNodeName)].AsString())
 	assert.Equal(t, "primary", attributes[attribute.Key(pgmesh.AttributeRouteMode)].AsString())
-	assert.Equal(t, "pgmesh.query.logical.Users.EnqueueCopyUsers", spans[1].Name())
+	assert.Equal(t, "pgmesh.query.logical.Users.CopyUsersAsync", spans[1].Name())
 
 	var metrics metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(t.Context(), &metrics))

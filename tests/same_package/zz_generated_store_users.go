@@ -101,8 +101,8 @@ type UsersReader interface {
 type UsersWriter interface {
 	// CopyUsers executes the generated CopyUsers query.
 	CopyUsers(ctx context.Context, arg []*CopyUsersT, storeOptions ...QueryOption) (int64, error)
-	// EnqueueCopyUsers accepts rows for asynchronous COPY.
-	EnqueueCopyUsers(ctx context.Context, arg []*CopyUsersT) *pgmesh.Future[int64]
+	// CopyUsersAsync accepts rows for asynchronous COPY.
+	CopyUsersAsync(ctx context.Context, arg []*CopyUsersT) *pgmesh.Future[int64]
 	// FlushCopyUsers drains asynchronous submissions accepted before its barrier.
 	FlushCopyUsers(ctx context.Context) error
 	// CreateUser executes the generated CreateUser query.
@@ -132,9 +132,9 @@ func (q *telemetryUsersStore[SK]) CopyUsers(ctx context.Context, arg []*CopyUser
 	return q.target.CopyUsers(ctx, arg, storeOptions...)
 }
 
-func (q *telemetryUsersStore[SK]) EnqueueCopyUsers(ctx context.Context, arg []*CopyUsersT) *pgmesh.Future[int64] {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "EnqueueCopyUsers", pgmesh.QueryKindWrite)
-	future := q.target.EnqueueCopyUsers(ctx, arg)
+func (q *telemetryUsersStore[SK]) CopyUsersAsync(ctx context.Context, arg []*CopyUsersT) *pgmesh.Future[int64] {
+	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "CopyUsersAsync", pgmesh.QueryKindWrite)
+	future := q.target.CopyUsersAsync(ctx, arg)
 	return pgmesh.RunFuture(func() (int64, error) {
 		count, err := future.Await(context.Background())
 		storeSpan.End(err)
@@ -288,9 +288,9 @@ func (q *groupedMeshStore[SK]) CopyUsers(ctx context.Context, arg []*CopyUsersT,
 	return result, err
 }
 
-// EnqueueCopyUsers accepts rows for asynchronous COPY.
-func (q *groupedMeshStore[SK]) EnqueueCopyUsers(ctx context.Context, arg []*CopyUsersT) *pgmesh.Future[int64] {
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "EnqueueCopyUsers", pgmesh.QueryKindWrite)
+// CopyUsersAsync accepts rows for asynchronous COPY.
+func (q *groupedMeshStore[SK]) CopyUsersAsync(ctx context.Context, arg []*CopyUsersT) *pgmesh.Future[int64] {
+	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "CopyUsersAsync", pgmesh.QueryKindWrite)
 	finish := func(future *pgmesh.Future[int64]) *pgmesh.Future[int64] {
 		return pgmesh.RunFuture(func() (int64, error) {
 			count, err := future.Await(context.Background())
@@ -312,7 +312,7 @@ func (q *groupedMeshStore[SK]) EnqueueCopyUsers(ctx context.Context, arg []*Copy
 		}
 		shard, routeErr := q.store.mesh.Shard(shardKey)
 		if routeErr != nil {
-			err := fmt.Errorf("route EnqueueCopyUsers input %d: %w", inputIndex, routeErr)
+			err := fmt.Errorf("route CopyUsersAsync input %d: %w", inputIndex, routeErr)
 			return finish(pgmesh.ResolvedFuture[int64](0, err))
 		}
 		shardGroup := groupsByName[shard.Name()]
@@ -342,7 +342,7 @@ func (q *groupedMeshStore[SK]) EnqueueCopyUsers(ctx context.Context, arg []*Copy
 		shardGroup.batcher = state.batchers[shardGroup.shard.Name()]
 		if shardGroup.batcher == nil {
 			state.mu.Unlock()
-			err := fmt.Errorf("query EnqueueCopyUsers has no copy batcher for replica set %q", shardGroup.shard.Name())
+			err := fmt.Errorf("query CopyUsersAsync has no copy batcher for replica set %q", shardGroup.shard.Name())
 			return finish(pgmesh.ResolvedFuture[int64](0, err))
 		}
 	}

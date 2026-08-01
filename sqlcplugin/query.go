@@ -227,7 +227,7 @@ func collectStoreGroups(queries []generatedQuery, opts *options) ([]storeGroup, 
 	for _, query := range queries {
 		if query.command == cmdCopyFrom {
 			for _, method := range []string{
-				copyEnqueueMethodName(query.methodName),
+				copyAsyncMethodName(query.methodName),
 				copyFlushMethodName(query.methodName),
 			} {
 				for _, candidate := range queries {
@@ -300,8 +300,8 @@ func copyBatchOptionName(query string) string {
 	return "With" + query + "Batching"
 }
 
-func copyEnqueueMethodName(query string) string {
-	return "Enqueue" + query
+func copyAsyncMethodName(query string) string {
+	return query + "Async"
 }
 
 func copyFlushMethodName(query string) string {

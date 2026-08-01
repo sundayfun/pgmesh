@@ -77,7 +77,7 @@ the primary. It takes precedence over normal replica selection.
   `pgmesh.ErrCrossShardTransaction`.
 - Routed `:copyfrom` accepts `WithTx` only when every input row groups to one
   physical shard; it rejects the call before copying otherwise.
-- Generated `Enqueue<CopyQuery>` methods do not accept query options and cannot
+- Generated `<CopyQuery>Async` methods do not accept query options and cannot
   run in a transaction; use the synchronous copy method when `WithTx` is
   required.
 - Transaction-bound generated calls do not fan writes out to mirrors.

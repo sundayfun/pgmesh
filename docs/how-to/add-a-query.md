@@ -305,10 +305,10 @@ are present, and suppresses write mirrors when it succeeds.
 
 ### Coalesce concurrent copy calls
 
-Every `:copyfrom` query also generates an asynchronous enqueue API and a
+Every `:copyfrom` query also generates an asynchronous API and a
 per-query store option. Enable it when many goroutines submit small row sets:
 
-For the complete enqueue, explicit flush, shutdown, failure, and telemetry
+For the complete submission, explicit flush, shutdown, failure, and telemetry
 workflow, see [Use asynchronous COPY batching](use-async-copy-batching.md).
 
 ```go
@@ -321,7 +321,7 @@ store, err := db.NewStore(
     }),
 )
 
-future := store.Accounts().EnqueueCopyAccounts(ctx, rows)
+future := store.Accounts().CopyAccountsAsync(ctx, rows)
 count, err := future.Await(ctx)
 ```
 
@@ -331,8 +331,8 @@ query and physical replica set. Different replica sets flush independently.
 A zero `FlushTimeout` uses `pgmesh.DefaultCopyBatchFlushTimeout`, currently one
 millisecond. Negative settings make store construction fail.
 
-Enqueue preflights every route before accepting rows. Once accepted, the write
-continues even if the enqueue context or an `Await` context is canceled; a
+The async method preflights every route before accepting rows. Once accepted,
+the write continues even if the call context or an `Await` context is canceled; a
 later `Await` can still retrieve the final result. Keep and await every future,
 do not mutate submitted rows until it resolves, or drain accepted work during
 shutdown and tests:
@@ -343,9 +343,9 @@ if err := store.Accounts().FlushCopyAccounts(shutdownCtx); err != nil {
 }
 ```
 
-Without `WithCopyAccountsBatching`, enqueue still runs asynchronously but sends
-one ordinary physical COPY per shard group from that call. Async enqueue has no
-`QueryOption` and cannot join a transaction; use synchronous `CopyAccounts`
+Without `WithCopyAccountsBatching`, `CopyAccountsAsync` still runs asynchronously
+but sends one ordinary physical COPY per shard group from that call. The async
+method has no `QueryOption` and cannot join a transaction; use synchronous `CopyAccounts`
 with `WithTx` for transactional work. A submission split across batches or
 shards can be partially committed before a later fragment fails, even though
 its future returns a zero count with an error. Batching is in-memory and does
