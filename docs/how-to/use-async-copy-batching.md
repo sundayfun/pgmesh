@@ -8,7 +8,7 @@ flush APIs. For a query named `CopyAccounts`, pgmesh generates:
 | `CopyAccounts` | Route and execute the rows synchronously |
 | `CopyAccountsAsync` | Accept rows and return a `*pgmesh.Future[int64]` |
 | `FlushCopyAccounts` | Force partial batches to execute and wait at a barrier |
-| `WithCopyAccountsBatching` | Configure per-shard batch size and timeout |
+| `WithCopyAccountsBatching` | Configure per-shard batch size, timeout, and COPY concurrency |
 
 The suffix always follows the sqlc query name, so `CopyEvents` generates
 `CopyEventsAsync`, `FlushCopyEvents`, and `WithCopyEventsBatching`.
@@ -33,8 +33,9 @@ store, err := db.NewStore(
     ctx,
     topology,
     db.WithCopyAccountsBatching(pgmesh.CopyBatchConfig{
-        BatchSize:    500,
-        FlushTimeout: 5 * time.Millisecond,
+        BatchSize:           500,
+        FlushTimeout:        5 * time.Millisecond,
+        MaxConcurrentCopies: 8,
     }),
 )
 if err != nil {
@@ -43,7 +44,14 @@ if err != nil {
 ```
 
 `BatchSize` is the maximum number of rows in one physical COPY on one shard.
-Zero leaves timed batches unbounded. A zero `FlushTimeout` uses
+When execution is backlogged, adjacent timeout-flushed batches are merged in
+FIFO order up to this size before a worker starts the physical COPY. Zero
+leaves timed and backlog-merged batches unbounded.
+
+`MaxConcurrentCopies` limits physical COPY executions in flight for one
+generated query and physical shard. Zero uses
+`pgmesh.DefaultCopyBatchMaxConcurrentCopies`, currently 32. Set it to one when
+physical batches must execute serially. A zero `FlushTimeout` uses
 `pgmesh.DefaultCopyBatchFlushTimeout`; negative values make store construction
 fail.
 
@@ -122,6 +130,12 @@ cancel the write.
 
 - Do not mutate submitted rows or referenced data until the future resolves.
 - Different physical shards batch and execute independently.
+- Up to `MaxConcurrentCopies` batches execute concurrently on each physical
+  shard. Their futures may resolve and their transactions may commit out of
+  submission order; configure one when serial execution is required.
+- The connection pool and PostgreSQL must have capacity for that concurrency.
+  A high value can move queueing into pool acquisition or increase WAL, index,
+  and lock contention.
 - One submission may split across shards or `BatchSize` boundaries; its future
   resolves only after every fragment completes.
 - Without `WithCopyAccountsBatching`, `CopyAccountsAsync` remains asynchronous but each
@@ -134,6 +148,9 @@ cancel the write.
   future return a zero count even though earlier fragments committed.
 - Batching is in memory and does not limit the outstanding backlog. Await
   futures or enforce application-level admission control.
+- Backlog merging only combines timeout-flushed batches that are already
+  waiting. It never merges across immediate, explicit, or size-flush
+  boundaries and does not extend the configured flush timeout.
 
 ## Observe explicit flushes
 

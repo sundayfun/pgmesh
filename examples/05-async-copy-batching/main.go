@@ -54,8 +54,9 @@ func run(ctx context.Context) error {
 			sharded.WithVShardMapping("shard-1", pgmesh.VShardRange(64, numVShards)),
 		),
 		sharded.WithCopyAccountsBatching(pgmesh.CopyBatchConfig{
-			BatchSize:    100,
-			FlushTimeout: time.Hour,
+			BatchSize:           100,
+			FlushTimeout:        time.Hour,
+			MaxConcurrentCopies: pgmesh.DefaultCopyBatchMaxConcurrentCopies,
 		}),
 	)
 	if err != nil {

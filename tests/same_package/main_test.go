@@ -1153,8 +1153,9 @@ func TestGeneratedAsyncCopyPartitionsAndSplitsSubmissions(t *testing.T) {
 		nil,
 		nil,
 		WithCopyUsersBatching(pgmesh.CopyBatchConfig{
-			BatchSize:    2,
-			FlushTimeout: time.Hour,
+			BatchSize:           2,
+			FlushTimeout:        time.Hour,
+			MaxConcurrentCopies: 1,
 		}),
 	)
 

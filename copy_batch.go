@@ -11,6 +11,10 @@ import (
 // DefaultCopyBatchFlushTimeout is used when CopyBatchConfig.FlushTimeout is zero.
 const DefaultCopyBatchFlushTimeout = time.Millisecond
 
+// DefaultCopyBatchMaxConcurrentCopies is used when
+// CopyBatchConfig.MaxConcurrentCopies is zero.
+const DefaultCopyBatchMaxConcurrentCopies = 32
+
 // ErrCopyBatchCountMismatch reports a successful physical COPY whose returned
 // row count does not match the number of rows supplied to it.
 var ErrCopyBatchCountMismatch = errors.New("pgmesh: copy batch row count mismatch")
@@ -19,11 +23,15 @@ var ErrCopyBatchCountMismatch = errors.New("pgmesh: copy batch row count mismatc
 // coalesced into physical COPY operations.
 type CopyBatchConfig struct {
 	// BatchSize is the maximum number of rows in one physical COPY. Zero leaves
-	// the timed batch unbounded by row count.
+	// timed and backlog-merged batches unbounded by row count.
 	BatchSize int
 	// FlushTimeout is measured from the first row in a partial batch. Zero uses
 	// DefaultCopyBatchFlushTimeout.
 	FlushTimeout time.Duration
+	// MaxConcurrentCopies is the maximum number of physical COPY executions in
+	// flight for one database target. Zero uses
+	// DefaultCopyBatchMaxConcurrentCopies.
+	MaxConcurrentCopies int
 }
 
 // CopyBatchFlushReason identifies the boundary that made a physical COPY
@@ -50,7 +58,8 @@ type CopyBatchObservation struct {
 	Err           error
 }
 
-// CopyBatchObserver receives completed physical COPY batch observations.
+// CopyBatchObserver receives completed physical COPY batch observations. A
+// batcher may invoke an observer concurrently.
 type CopyBatchObserver func(context.Context, CopyBatchObservation)
 
 // Validate validates the configuration without creating a batcher.
@@ -61,12 +70,18 @@ func (c CopyBatchConfig) Validate() error {
 	if c.FlushTimeout < 0 {
 		return errors.New("pgmesh: copy batch flush timeout must not be negative")
 	}
+	if c.MaxConcurrentCopies < 0 {
+		return errors.New("pgmesh: copy batch max concurrent copies must not be negative")
+	}
 	return nil
 }
 
 func (c CopyBatchConfig) normalized() CopyBatchConfig {
 	if c.FlushTimeout == 0 {
 		c.FlushTimeout = DefaultCopyBatchFlushTimeout
+	}
+	if c.MaxConcurrentCopies == 0 {
+		c.MaxConcurrentCopies = DefaultCopyBatchMaxConcurrentCopies
 	}
 	return c
 }
@@ -198,8 +213,8 @@ type physicalCopyBatch[T any] struct {
 }
 
 // CopyBatcher coalesces rows for one generated COPY query and one physical
-// database target. It starts a drain goroutine only while physical batches are
-// ready and executes at most one physical COPY at a time.
+// database target. It executes up to CopyBatchConfig.MaxConcurrentCopies
+// physical COPY operations at a time.
 type CopyBatcher[T any] struct {
 	mu sync.Mutex
 
@@ -208,7 +223,7 @@ type CopyBatcher[T any] struct {
 	observers []CopyBatchObserver
 	active    *physicalCopyBatch[T]
 	ready     []*physicalCopyBatch[T]
-	draining  bool
+	running   int
 
 	nextSubmissionID uint64
 	outstanding      map[uint64]*Future[int64]
@@ -234,7 +249,7 @@ func NewCopyBatcher[T any](
 		observers:        append([]CopyBatchObserver(nil), observers...),
 		active:           nil,
 		ready:            nil,
-		draining:         false,
+		running:          0,
 		nextSubmissionID: 0,
 		outstanding:      make(map[uint64]*Future[int64]),
 	}, nil
@@ -273,7 +288,6 @@ func (b *CopyBatcher[T]) Submit(ctx context.Context, rows []T) *Future[int64] {
 	b.outstanding[submission.id] = future
 
 	remaining := rows
-	startDrain := false
 	for len(remaining) > 0 {
 		if b.active == nil {
 			b.active = &physicalCopyBatch[T]{
@@ -304,23 +318,21 @@ func (b *CopyBatcher[T]) Submit(ctx context.Context, rows []T) *Future[int64] {
 
 		if b.config.BatchSize > 0 && len(b.active.rows) == b.config.BatchSize {
 			batch := b.detachActiveLocked(CopyBatchFlushReasonSize)
-			if b.enqueueReadyLocked(batch) {
-				startDrain = true
-			}
+			b.enqueueReadyLocked(batch)
 		}
 	}
+	ready := b.takeReadyLocked()
 	b.mu.Unlock()
 
-	if startDrain {
-		go b.drain()
-	}
+	b.startDrains(ready)
 	return future
 }
 
 // SubmitImmediate accepts rows as one physical COPY without coalescing them
-// with other submissions. It shares the batcher's FIFO execution queue and is
-// therefore included in Flush barriers. Callers must not mutate rows or
-// referenced row data until the Future resolves.
+// with other submissions. It shares the batcher's execution capacity and is
+// included in Flush barriers, but concurrent batches may complete out of
+// order. Callers must not mutate rows or referenced row data until the Future
+// resolves.
 func (b *CopyBatcher[T]) SubmitImmediate(ctx context.Context, rows []T) *Future[int64] {
 	if len(rows) == 0 {
 		return ResolvedFuture[int64](0, nil)
@@ -350,7 +362,7 @@ func (b *CopyBatcher[T]) SubmitImmediate(ctx context.Context, rows []T) *Future[
 	submission.id = b.nextSubmissionID
 	b.outstanding[submission.id] = future
 	submission.addFragment()
-	startDrain := b.enqueueReadyLocked(&physicalCopyBatch[T]{
+	b.enqueueReadyLocked(&physicalCopyBatch[T]{
 		ctx:         context.WithoutCancel(ctx),
 		rows:        append([]T(nil), rows...),
 		parts:       []copyBatchPart[T]{{submission: submission}},
@@ -358,11 +370,10 @@ func (b *CopyBatcher[T]) SubmitImmediate(ctx context.Context, rows []T) *Future[
 		createdAt:   time.Now(),
 		flushReason: CopyBatchFlushReasonImmediate,
 	})
+	ready := b.takeReadyLocked()
 	b.mu.Unlock()
 
-	if startDrain {
-		go b.drain()
-	}
+	b.startDrains(ready)
 	return future
 }
 
@@ -375,11 +386,10 @@ func (b *CopyBatcher[T]) flushTimedBatch(batch *physicalCopyBatch[T]) {
 	b.active = nil
 	batch.timer = nil
 	batch.flushReason = CopyBatchFlushReasonTimeout
-	startDrain := b.enqueueReadyLocked(batch)
+	b.enqueueReadyLocked(batch)
+	ready := b.takeReadyLocked()
 	b.mu.Unlock()
-	if startDrain {
-		go b.drain()
-	}
+	b.startDrains(ready)
 }
 
 func (b *CopyBatcher[T]) detachActiveLocked(
@@ -397,31 +407,64 @@ func (b *CopyBatcher[T]) detachActiveLocked(
 	return batch
 }
 
-func (b *CopyBatcher[T]) enqueueReadyLocked(batch *physicalCopyBatch[T]) bool {
+func (b *CopyBatcher[T]) enqueueReadyLocked(batch *physicalCopyBatch[T]) {
 	if batch == nil || len(batch.rows) == 0 {
-		return false
+		return
 	}
 	b.ready = append(b.ready, batch)
-	if b.draining {
-		return false
-	}
-	b.draining = true
-	return true
 }
 
-func (b *CopyBatcher[T]) drain() {
-	for {
-		b.mu.Lock()
-		if len(b.ready) == 0 {
-			b.draining = false
-			b.mu.Unlock()
-			return
-		}
-		batch := b.ready[0]
-		b.ready[0] = nil
-		b.ready = b.ready[1:]
-		b.mu.Unlock()
+func (b *CopyBatcher[T]) popReadyLocked() *physicalCopyBatch[T] {
+	batch := b.ready[0]
+	b.ready[0] = nil
+	b.ready = b.ready[1:]
+	return batch
+}
 
+func (b *CopyBatcher[T]) popMergedReadyLocked() *physicalCopyBatch[T] {
+	batch := b.popReadyLocked()
+	if batch.flushReason != CopyBatchFlushReasonTimeout {
+		return batch
+	}
+	for len(b.ready) > 0 {
+		next := b.ready[0]
+		if next.flushReason != CopyBatchFlushReasonTimeout {
+			break
+		}
+		if b.config.BatchSize > 0 &&
+			len(batch.rows)+len(next.rows) > b.config.BatchSize {
+			break
+		}
+		next = b.popReadyLocked()
+		batch.rows = append(batch.rows, next.rows...)
+		batch.parts = append(batch.parts, next.parts...)
+	}
+	return batch
+}
+
+func (b *CopyBatcher[T]) takeReadyLocked() []*physicalCopyBatch[T] {
+	available := b.config.MaxConcurrentCopies - b.running
+	if available <= 0 || len(b.ready) == 0 {
+		return nil
+	}
+
+	batches := make([]*physicalCopyBatch[T], 0, min(available, len(b.ready)))
+	for available > 0 && len(b.ready) > 0 {
+		batches = append(batches, b.popMergedReadyLocked())
+		b.running++
+		available--
+	}
+	return batches
+}
+
+func (b *CopyBatcher[T]) startDrains(batches []*physicalCopyBatch[T]) {
+	for _, batch := range batches {
+		go b.drain(batch)
+	}
+}
+
+func (b *CopyBatcher[T]) drain(batch *physicalCopyBatch[T]) {
+	for batch != nil {
 		started := time.Now()
 		count, err := b.execute(batch.ctx, batch.rows)
 		if err == nil && count != int64(len(batch.rows)) {
@@ -448,6 +491,16 @@ func (b *CopyBatcher[T]) drain() {
 		for _, part := range batch.parts {
 			part.submission.completeFragment(err)
 		}
+
+		b.mu.Lock()
+		b.running--
+		ready := b.takeReadyLocked()
+		b.mu.Unlock()
+		if len(ready) == 0 {
+			return
+		}
+		batch = ready[0]
+		b.startDrains(ready[1:])
 	}
 }
 
@@ -457,16 +510,15 @@ func (b *CopyBatcher[T]) drain() {
 func (b *CopyBatcher[T]) FlushAsync() *Future[struct{}] {
 	b.mu.Lock()
 	batch := b.detachActiveLocked(CopyBatchFlushReasonExplicit)
-	startDrain := b.enqueueReadyLocked(batch)
+	b.enqueueReadyLocked(batch)
+	ready := b.takeReadyLocked()
 	futures := make([]*Future[int64], 0, len(b.outstanding))
 	for _, future := range b.outstanding {
 		futures = append(futures, future)
 	}
 	b.mu.Unlock()
 
-	if startDrain {
-		go b.drain()
-	}
+	b.startDrains(ready)
 	return RunFuture(func() (struct{}, error) {
 		errs := make([]error, 0, len(futures))
 		for _, future := range futures {
