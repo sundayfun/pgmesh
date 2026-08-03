@@ -50,6 +50,7 @@ pgmesh never shuts down a provider.
 | `pgmesh.query.wrapper.duration` | Histogram | `s` | End-to-end duration of a configured factory wrapper |
 | `pgmesh.query.logical.duration` | Histogram | `s` | End-to-end duration of one logical generated-method call, including routing and fan-out aggregation |
 | `pgmesh.query.physical.duration` | Histogram | `s` | Duration of one physical database execution on one selected shard and node |
+| `pgmesh.query.physical.concurrent` | UpDownCounter | `{query}` | Physical database queries currently executing on each selected shard and node |
 | `pgmesh.copy.batch.rows` | Histogram | `{row}` | Attempted rows in each physical COPY batch |
 | `pgmesh.copy.batch.submissions` | Histogram | `{submission}` | Logical submission fragments represented in each physical COPY batch |
 | `pgmesh.copy.batch.flushes` | Counter | `{batch}` | Physical COPY batches, grouped by flush reason |
@@ -65,9 +66,18 @@ Each histogram's count reports throughput for its layer:
   `pgmesh.wrapper.delegated=false` for factory short-circuits such as
   cache hits, and `true` for delegations.
 
-Duration histograms use explicit bucket boundaries of `0.001`, `0.005`,
-`0.01`, `0.05`, `0.1`, `0.5`, `1`, `5`, and `10` seconds. Applications can
-override aggregations with SDK views.
+The default explicit histogram bucket boundaries are:
+
+| Metrics | Unit | Boundaries |
+| --- | --- | --- |
+| `pgmesh.query.wrapper.duration`, `pgmesh.query.logical.duration`, `pgmesh.query.physical.duration` | `s` | `0.001`, `0.005`, `0.01`, `0.03`, `0.05`, `0.075`, `0.1`, `0.125`, `0.25`, `0.5`, `0.75`, `1`, `3`, `5`, `10` |
+| `pgmesh.copy.batch.duration` | `s` | `0.001`, `0.005`, `0.01`, `0.02`, `0.03`, `0.05`, `0.075`, `0.1`, `0.2`, `0.3`, `0.4`, `0.5`, `1`, `5`, `10` |
+| `pgmesh.copy.queue.duration` | `s` | `0.0001`, `0.0005`, `0.001`, `0.003`, `0.004`, `0.005`, `0.01`, `0.03`, `0.05`, `0.075`, `0.1`, `0.5`, `1`, `5` |
+| `pgmesh.copy.batch.rows` | `{row}` | `1`, `2`, `4`, `5`, `8`, `12`, `16`, `20`, `24`, `28`, `32`, `36`, `64`, `128`, `256`, `512` |
+| `pgmesh.copy.batch.submissions` | `{submission}` | `1`, `2`, `4`, `8`, `12`, `16`, `20`, `24`, `28`, `32`, `48`, `64`, `128`, `256` |
+
+Each histogram also has an implicit overflow bucket above its final finite
+boundary. Applications can override the default aggregations with SDK views.
 
 ### Common PromQL queries
 
@@ -104,6 +114,15 @@ Physical database QPS for every shard and selected node:
 ```promql
 sum by ("pgmesh.shard.name", "pgmesh.node.name", "pgmesh.node.role") (
   rate({"pgmesh.query.physical.duration_count"}[5m])
+)
+```
+
+Physical database queries currently executing on every shard and selected
+node:
+
+```promql
+sum by ("pgmesh.shard.name", "pgmesh.node.name", "pgmesh.node.role") (
+  {"pgmesh.query.physical.concurrent"}
 )
 ```
 
@@ -253,7 +272,8 @@ time series.
 
 ### Physical-query attributes
 
-Every `pgmesh.query.physical.duration` data point identifies the exact selected
+Every `pgmesh.query.physical.duration` and
+`pgmesh.query.physical.concurrent` data point identifies the exact selected
 target:
 
 | Attribute | Value |
@@ -265,7 +285,7 @@ target:
 | `pgmesh.node.name` | `primary`, `replica-N`, or `transaction` |
 | `pgmesh.node.role` | `primary`, `read_replica`, or `transaction` |
 | `pgmesh.route.mode` | `read`, `primary`, or `transaction` |
-| `error.type` | Error type on failure; omitted on success |
+| `error.type` | Error type on failed duration points; omitted from the live concurrent count |
 
 Replica ordinals follow configuration order. For example,
 `WithReadReplicas(replica0, replica1)` produces `replica-0` and `replica-1`.

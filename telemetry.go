@@ -33,6 +33,11 @@ const MetricQueryLogicalDuration = "pgmesh.query.logical.duration"
 // pgmesh never shuts it down.
 const MetricQueryPhysicalDuration = "pgmesh.query.physical.duration"
 
+// MetricQueryPhysicalConcurrent is the OpenTelemetry up-down counter of
+// physical database queries currently executing. It is grouped by the same
+// bounded query and target attributes as MetricQueryPhysicalDuration.
+const MetricQueryPhysicalConcurrent = "pgmesh.query.physical.concurrent"
+
 // MetricCopyBatchRows is the OpenTelemetry histogram of attempted rows per
 // physical COPY operation.
 const MetricCopyBatchRows = "pgmesh.copy.batch.rows"
@@ -127,6 +132,7 @@ type queryTelemetry struct {
 	wrapperDuration      metric.Float64Histogram
 	logicalDuration      metric.Float64Histogram
 	physicalDuration     metric.Float64Histogram
+	physicalConcurrent   metric.Int64UpDownCounter
 	copyBatchRows        metric.Int64Histogram
 	copyBatchSubmissions metric.Int64Histogram
 	copyBatchFlushes     metric.Int64Counter
@@ -139,32 +145,34 @@ type queryTelemetry struct {
 // generated store calls End exactly once; callers using StartSpan directly must
 // do the same.
 type QuerySpan struct {
-	ctx              context.Context
-	span             trace.Span
-	tracer           trace.Tracer
-	logicalDuration  metric.Float64Histogram
-	physicalDuration metric.Float64Histogram
-	started          time.Time
-	attributes       []attribute.KeyValue
-	storeName        string
-	queryName        string
-	kind             QueryKind
-	routeMode        RouteMode
-	routeScope       RouteScope
-	shardCount       int
-	logger           *slog.Logger
-	logAttributes    []slog.Attr
+	ctx                context.Context
+	span               trace.Span
+	tracer             trace.Tracer
+	logicalDuration    metric.Float64Histogram
+	physicalDuration   metric.Float64Histogram
+	physicalConcurrent metric.Int64UpDownCounter
+	started            time.Time
+	attributes         []attribute.KeyValue
+	storeName          string
+	queryName          string
+	kind               QueryKind
+	routeMode          RouteMode
+	routeScope         RouteScope
+	shardCount         int
+	logger             *slog.Logger
+	logAttributes      []slog.Attr
 }
 
 // PhysicalQuerySpan records one database execution on one resolved node.
 type PhysicalQuerySpan struct {
-	ctx              context.Context
-	span             trace.Span
-	physicalDuration metric.Float64Histogram
-	started          time.Time
-	metricAttributes []attribute.KeyValue
-	logger           *slog.Logger
-	logAttributes    []slog.Attr
+	ctx                context.Context
+	span               trace.Span
+	physicalDuration   metric.Float64Histogram
+	physicalConcurrent metric.Int64UpDownCounter
+	started            time.Time
+	metricAttributes   []attribute.KeyValue
+	logger             *slog.Logger
+	logAttributes      []slog.Attr
 }
 
 // StoreSpan records tracing, metrics, and logging around one factory-wrapped
@@ -222,7 +230,7 @@ func (t *queryTelemetry) setMeterProvider(provider metric.MeterProvider) error {
 		metric.WithDescription("Duration of logical pgmesh generated-query calls"),
 		metric.WithUnit("s"),
 		metric.WithExplicitBucketBoundaries(
-			0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10,
+			0.001, 0.005, 0.01, 0.03, 0.05, 0.075, 0.1, 0.125, 0.25, 0.5, 0.75, 1, 3, 5, 10,
 		),
 	)
 	if err != nil {
@@ -234,19 +242,28 @@ func (t *queryTelemetry) setMeterProvider(provider metric.MeterProvider) error {
 		metric.WithDescription("Duration of physical pgmesh database queries"),
 		metric.WithUnit("s"),
 		metric.WithExplicitBucketBoundaries(
-			0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10,
+			0.001, 0.005, 0.01, 0.03, 0.05, 0.075, 0.1, 0.125, 0.25, 0.5, 0.75, 1, 3, 5, 10,
 		),
 	)
 	if err != nil {
 		return err
 	}
 	t.physicalDuration = physicalDuration
+	physicalConcurrent, err := meter.Int64UpDownCounter(
+		MetricQueryPhysicalConcurrent,
+		metric.WithDescription("Physical pgmesh database queries currently executing"),
+		metric.WithUnit("{query}"),
+	)
+	if err != nil {
+		return err
+	}
+	t.physicalConcurrent = physicalConcurrent
 	wrapperDuration, err := meter.Float64Histogram(
 		MetricQueryWrapperDuration,
 		metric.WithDescription("Duration of application-wrapped pgmesh query methods"),
 		metric.WithUnit("s"),
 		metric.WithExplicitBucketBoundaries(
-			0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10,
+			0.001, 0.005, 0.01, 0.03, 0.05, 0.075, 0.1, 0.125, 0.25, 0.5, 0.75, 1, 3, 5, 10,
 		),
 	)
 	if err != nil {
@@ -258,7 +275,7 @@ func (t *queryTelemetry) setMeterProvider(provider metric.MeterProvider) error {
 		metric.WithDescription("Attempted rows per physical pgmesh COPY operation"),
 		metric.WithUnit("{row}"),
 		metric.WithExplicitBucketBoundaries(
-			1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096,
+			1, 2, 4, 5, 8, 12, 16, 20, 24, 28, 32, 36, 64, 128, 256, 512,
 		),
 	)
 	if err != nil {
@@ -269,7 +286,9 @@ func (t *queryTelemetry) setMeterProvider(provider metric.MeterProvider) error {
 		MetricCopyBatchSubmissions,
 		metric.WithDescription("Logical submission fragments per physical pgmesh COPY operation"),
 		metric.WithUnit("{submission}"),
-		metric.WithExplicitBucketBoundaries(1, 2, 4, 8, 16, 32, 64, 128, 256),
+		metric.WithExplicitBucketBoundaries(
+			1, 2, 4, 8, 12, 16, 20, 24, 28, 32, 48, 64, 128, 256,
+		),
 	)
 	if err != nil {
 		return err
@@ -289,7 +308,7 @@ func (t *queryTelemetry) setMeterProvider(provider metric.MeterProvider) error {
 		metric.WithDescription("Duration of physical pgmesh COPY operations"),
 		metric.WithUnit("s"),
 		metric.WithExplicitBucketBoundaries(
-			0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10,
+			0.001, 0.005, 0.01, 0.02, 0.03, 0.05, 0.075, 0.1, 0.2, 0.3, 0.4, 0.5, 1, 5, 10,
 		),
 	)
 	if err != nil {
@@ -301,7 +320,7 @@ func (t *queryTelemetry) setMeterProvider(provider metric.MeterProvider) error {
 		metric.WithDescription("Time from oldest row admission until physical pgmesh COPY execution"),
 		metric.WithUnit("s"),
 		metric.WithExplicitBucketBoundaries(
-			0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5,
+			0.0001, 0.0005, 0.001, 0.003, 0.004, 0.005, 0.01, 0.03, 0.05, 0.075, 0.1, 0.5, 1, 5,
 		),
 	)
 	if err != nil {
@@ -434,20 +453,21 @@ func (m *Mesh[R, W, SK]) StartSpan(
 		trace.WithAttributes(attributes...),
 	)
 	return ctx, &QuerySpan{
-		ctx:              ctx,
-		span:             span,
-		tracer:           m.telemetry.tracer,
-		logicalDuration:  m.telemetry.logicalDuration,
-		physicalDuration: m.telemetry.physicalDuration,
-		started:          time.Now(),
-		attributes:       attributes[:3],
-		storeName:        storeName,
-		queryName:        queryName,
-		kind:             kind,
-		routeMode:        RouteModeUnresolved,
-		routeScope:       RouteScopeUnresolved,
-		shardCount:       0,
-		logger:           m.telemetry.logger,
+		ctx:                ctx,
+		span:               span,
+		tracer:             m.telemetry.tracer,
+		logicalDuration:    m.telemetry.logicalDuration,
+		physicalDuration:   m.telemetry.physicalDuration,
+		physicalConcurrent: m.telemetry.physicalConcurrent,
+		started:            time.Now(),
+		attributes:         attributes[:3],
+		storeName:          storeName,
+		queryName:          queryName,
+		kind:               kind,
+		routeMode:          RouteModeUnresolved,
+		routeScope:         RouteScopeUnresolved,
+		shardCount:         0,
+		logger:             m.telemetry.logger,
 		logAttributes: []slog.Attr{
 			slog.String("store_name", storeName),
 			slog.String("query_name", queryName),
@@ -495,6 +515,7 @@ func (s *QuerySpan) StartQuerySpan(
 		ctx,
 		s.tracer,
 		s.physicalDuration,
+		s.physicalConcurrent,
 		s.logger,
 		s.storeName,
 		s.queryName,
@@ -518,6 +539,7 @@ func (m *Mesh[R, W, SK]) StartQuerySpan(
 		ctx,
 		m.telemetry.tracer,
 		m.telemetry.physicalDuration,
+		m.telemetry.physicalConcurrent,
 		m.telemetry.logger,
 		storeName,
 		queryName,
@@ -532,6 +554,7 @@ func startPhysicalQuerySpan(
 	ctx context.Context,
 	tracer trace.Tracer,
 	physicalDuration metric.Float64Histogram,
+	physicalConcurrent metric.Int64UpDownCounter,
 	logger *slog.Logger,
 	storeName string,
 	queryName string,
@@ -582,14 +605,20 @@ func startPhysicalQuerySpan(
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(spanAttributes...),
 	)
+	physicalConcurrent.Add(
+		ctx,
+		1,
+		metric.WithAttributes(metricAttributes...),
+	)
 	return ctx, &PhysicalQuerySpan{
-		ctx:              ctx,
-		span:             span,
-		physicalDuration: physicalDuration,
-		started:          time.Now(),
-		metricAttributes: metricAttributes,
-		logger:           logger,
-		logAttributes:    logAttributes,
+		ctx:                ctx,
+		span:               span,
+		physicalDuration:   physicalDuration,
+		physicalConcurrent: physicalConcurrent,
+		started:            time.Now(),
+		metricAttributes:   metricAttributes,
+		logger:             logger,
+		logAttributes:      logAttributes,
 	}
 }
 
@@ -630,6 +659,11 @@ func (s *QuerySpan) End(err error) {
 // End records one physical database-query metric and span.
 func (s *PhysicalQuerySpan) End(err error) {
 	duration := time.Since(s.started)
+	s.physicalConcurrent.Add(
+		s.ctx,
+		-1,
+		metric.WithAttributes(s.metricAttributes...),
+	)
 	metricAttributes := append([]attribute.KeyValue(nil), s.metricAttributes...)
 	if err != nil {
 		errorType := semconv.ErrorType(err)

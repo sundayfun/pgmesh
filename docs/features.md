@@ -15,7 +15,7 @@ application-facing pgmesh feature.
 | Query-group wrappers and cache-aside | `WithXXXFactory`, cache hits, delegated misses, write-through updates | [Add cache-aside behavior](how-to/add-cache-aside.md) | [`06-cache-aside`](../examples/06-cache-aside) |
 | Grouped and scatter queries | List lookup grouping and explicit `shard: all()` fan-out | [Use multi-shard queries](how-to/use-multi-shard-queries.md) | [`07-multi-shard-queries`](../examples/07-multi-shard-queries) |
 | Structured debug logging | Logical and physical query records with route attributes | [Enable structured logging](how-to/enable-logging.md) | [`03-sharded-read-write`](../examples/03-sharded-read-write) |
-| OpenTelemetry metrics and traces | Wrapper/logical/physical latency, per-node throughput, COPY telemetry | [Enable OpenTelemetry](how-to/enable-opentelemetry.md) | Application Collector/exporter configuration |
+| OpenTelemetry metrics and traces | Wrapper/logical/physical latency, per-node throughput and concurrency, COPY telemetry | [Enable OpenTelemetry](how-to/enable-opentelemetry.md) | Application Collector/exporter configuration |
 | Generator layouts and sqlc options | Same-package and separate-package output, renames, overrides | [Configure generation](how-to/configure-generation.md) | [`tests/same_package`](../tests/same_package) and [`tests/separate_package`](../tests/separate_package) fixtures |
 
 OpenTelemetry exporters and Collectors remain application infrastructure, so
