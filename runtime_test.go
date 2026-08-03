@@ -268,7 +268,7 @@ func TestQueryTelemetryRecordsRoutingAndErrors(t *testing.T) {
 	var metrics metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(t.Context(), &metrics))
 	require.Len(t, metrics.ScopeMetrics, 1)
-	require.Len(t, metrics.ScopeMetrics[0].Metrics, 2)
+	require.Len(t, metrics.ScopeMetrics[0].Metrics, 3)
 	queryHistogram := metricHistogram(t, metrics, pgmesh.MetricQueryPhysicalDuration)
 	require.Len(t, queryHistogram.DataPoints, 1)
 	assert.Equal(t, uint64(1), queryHistogram.DataPoints[0].Count)
@@ -347,7 +347,7 @@ func TestQueryTelemetryRecordsSuccessfulQueries(t *testing.T) {
 	var metrics metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(t.Context(), &metrics))
 	require.Len(t, metrics.ScopeMetrics, 1)
-	require.Len(t, metrics.ScopeMetrics[0].Metrics, 2)
+	require.Len(t, metrics.ScopeMetrics[0].Metrics, 3)
 	queryHistogram := metricHistogram(t, metrics, pgmesh.MetricQueryPhysicalDuration)
 	require.Len(t, queryHistogram.DataPoints, 2)
 	metricNodes := make(map[string]uint64, 2)
@@ -361,6 +361,71 @@ func TestQueryTelemetryRecordsSuccessfulQueries(t *testing.T) {
 	operationHistogram := metricHistogram(t, metrics, pgmesh.MetricQueryLogicalDuration)
 	require.Len(t, operationHistogram.DataPoints, 1)
 	assert.Equal(t, uint64(2), operationHistogram.DataPoints[0].Count)
+}
+
+func TestQueryTelemetryRecordsConcurrentPhysicalQueries(t *testing.T) {
+	t.Parallel()
+
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { require.NoError(t, meterProvider.Shutdown(context.Background())) })
+
+	mesh, err := pgmesh.NewBuilder[string, *fakeWriter, uint64](1).
+		WithMeterProvider(meterProvider).
+		WithHasher(pgmesh.ConstantShardHashFor[uint64](0)).
+		Link(0, pgmesh.NewReplicaSet("main", node("primary"), nil)).
+		Build()
+	require.NoError(t, err)
+	shard, err := mesh.Shard(0)
+	require.NoError(t, err)
+	route := shard.ReadRoute()
+
+	_, first := mesh.StartQuerySpan(
+		t.Context(),
+		"UserStore",
+		"GetUser",
+		pgmesh.QueryKindRead,
+		route.Metadata(),
+		pgmesh.RouteModeRead,
+	)
+	_, second := mesh.StartQuerySpan(
+		t.Context(),
+		"UserStore",
+		"GetUser",
+		pgmesh.QueryKindRead,
+		route.Metadata(),
+		pgmesh.RouteModeRead,
+	)
+
+	var metrics metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(t.Context(), &metrics))
+	concurrent := metricInt64Sum(t, metrics, pgmesh.MetricQueryPhysicalConcurrent)
+	require.Len(t, concurrent.DataPoints, 1)
+	assert.Equal(t, int64(2), concurrent.DataPoints[0].Value)
+	assert.False(t, concurrent.IsMonotonic)
+	attributes := attributeMap(concurrent.DataPoints[0].Attributes.ToSlice())
+	assert.Equal(t, "UserStore", attributes[pgmesh.AttributeStoreName].AsString())
+	assert.Equal(t, "GetUser", attributes[pgmesh.AttributeQueryName].AsString())
+	assert.Equal(t, "read", attributes[pgmesh.AttributeQueryKind].AsString())
+	assert.Equal(t, "main", attributes[pgmesh.AttributeShardName].AsString())
+	assert.Equal(t, "primary", attributes[pgmesh.AttributeNodeName].AsString())
+	assert.Equal(t, "primary", attributes[pgmesh.AttributeNodeRole].AsString())
+	assert.Equal(t, "read", attributes[pgmesh.AttributeRouteMode].AsString())
+	assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeVirtualShard))
+
+	first.End(nil)
+	metrics = metricdata.ResourceMetrics{}
+	require.NoError(t, reader.Collect(t.Context(), &metrics))
+	concurrent = metricInt64Sum(t, metrics, pgmesh.MetricQueryPhysicalConcurrent)
+	require.Len(t, concurrent.DataPoints, 1)
+	assert.Equal(t, int64(1), concurrent.DataPoints[0].Value)
+
+	second.End(nil)
+	metrics = metricdata.ResourceMetrics{}
+	require.NoError(t, reader.Collect(t.Context(), &metrics))
+	concurrent = metricInt64Sum(t, metrics, pgmesh.MetricQueryPhysicalConcurrent)
+	require.Len(t, concurrent.DataPoints, 1)
+	assert.Zero(t, concurrent.DataPoints[0].Value)
 }
 
 func TestStoreTelemetryRecordsFactoryShortCircuit(t *testing.T) {
@@ -611,7 +676,7 @@ func TestQueryTelemetryRecordsMultiRoute(t *testing.T) {
 	var metrics metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(t.Context(), &metrics))
 	require.Len(t, metrics.ScopeMetrics, 1)
-	require.Len(t, metrics.ScopeMetrics[0].Metrics, 2)
+	require.Len(t, metrics.ScopeMetrics[0].Metrics, 3)
 	operationHistogram := metricHistogram(t, metrics, pgmesh.MetricQueryLogicalDuration)
 	require.Len(t, operationHistogram.DataPoints, 1)
 	metricAttributes := attributeMap(operationHistogram.DataPoints[0].Attributes.ToSlice())
@@ -661,6 +726,27 @@ func metricHistogram(
 	}
 	require.FailNow(t, "metric not found", name)
 	return metricdata.Histogram[float64]{}
+}
+
+func metricInt64Sum(
+	t *testing.T,
+	metrics metricdata.ResourceMetrics,
+	name string,
+) metricdata.Sum[int64] {
+	t.Helper()
+
+	for _, scope := range metrics.ScopeMetrics {
+		for _, measurement := range scope.Metrics {
+			if measurement.Name != name {
+				continue
+			}
+			sum, ok := measurement.Data.(metricdata.Sum[int64])
+			require.True(t, ok)
+			return sum
+		}
+	}
+	require.FailNow(t, "metric not found", name)
+	return metricdata.Sum[int64]{}
 }
 
 func assertMetricAttributes(t *testing.T, items []attribute.KeyValue) {

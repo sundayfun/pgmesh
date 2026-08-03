@@ -1592,7 +1592,7 @@ func TestGeneratedStoreTelemetryWiring(t *testing.T) {
 	var metrics metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(t.Context(), &metrics))
 	require.Len(t, metrics.ScopeMetrics, 1)
-	require.Len(t, metrics.ScopeMetrics[0].Metrics, 2)
+	require.Len(t, metrics.ScopeMetrics[0].Metrics, 3)
 	histogram := telemetryHistogram(t, metrics, pgmesh.MetricQueryPhysicalDuration)
 	require.Len(t, histogram.DataPoints, len(expectedSpans))
 	var measurementCount uint64
@@ -1771,7 +1771,7 @@ func TestGeneratedStoreFactoryTelemetrySeparatesCacheAndInternalQuerySignals(t *
 	var metrics metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(t.Context(), &metrics))
 	require.Len(t, metrics.ScopeMetrics, 1)
-	require.Len(t, metrics.ScopeMetrics[0].Metrics, 3)
+	require.Len(t, metrics.ScopeMetrics[0].Metrics, 4)
 	storeHistogram := telemetryHistogram(t, metrics, pgmesh.MetricQueryWrapperDuration)
 	require.Len(t, storeHistogram.DataPoints, 2)
 	metricExecutions := make(map[string]bool, 2)
