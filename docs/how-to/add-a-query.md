@@ -316,8 +316,9 @@ store, err := db.NewStore(
     ctx,
     topology,
     db.WithCopyAccountsBatching(pgmesh.CopyBatchConfig{
-        BatchSize:    500,
-        FlushTimeout: 2 * time.Millisecond,
+        BatchSize:           500,
+        FlushTimeout:        2 * time.Millisecond,
+        MaxConcurrentCopies: 8,
     }),
 )
 
@@ -327,9 +328,15 @@ count, err := future.Await(ctx)
 
 Concurrent submissions are coalesced only when they target the same generated
 query and physical replica set. Different replica sets flush independently.
-`BatchSize` limits rows per physical COPY; zero leaves timed batches unbounded.
-A zero `FlushTimeout` uses `pgmesh.DefaultCopyBatchFlushTimeout`, currently one
-millisecond. Negative settings make store construction fail.
+`BatchSize` limits rows per physical COPY; adjacent queued timeout batches are
+merged in FIFO order up to that size. Zero leaves timed and backlog-merged
+batches unbounded. `MaxConcurrentCopies` limits simultaneous physical COPY
+executions per replica set; zero uses
+`pgmesh.DefaultCopyBatchMaxConcurrentCopies`, currently 32. Concurrent batches
+may commit out of submission order, so configure one when serial execution is
+required. A zero `FlushTimeout` uses
+`pgmesh.DefaultCopyBatchFlushTimeout`, currently one millisecond. Negative
+settings make store construction fail.
 
 The async method preflights every route before accepting rows. Once accepted,
 the write continues even if the call context or an `Await` context is canceled; a
