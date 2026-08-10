@@ -20,8 +20,8 @@ func TestPostgresAsyncCopyBatchesAndFlushes(t *testing.T) {
 	queries := harness.NewShardedStore(
 		t,
 		fixture.WithCopyUsersBatching(pgmesh.CopyBatchConfig{
-			BatchSize:    8,
-			FlushTimeout: time.Hour,
+			MaxRowsPerBatch: 8,
+			Linger:          time.Hour,
 		}),
 	)
 

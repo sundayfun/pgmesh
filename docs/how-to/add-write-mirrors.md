@@ -41,9 +41,9 @@ replicaSetOptions := []db.ShardedOption{
 Attach the new database as a mirror of the old main replica set:
 
 ```go
-mappingOption := db.WithVShardMapping(
+mappingOption := db.WithVirtualShardMapping(
     "old-shard",
-    pgmesh.VShardRange(0, 128),
+    pgmesh.VirtualShardRange(0, 128),
     "new-shard",
 )
 ```
@@ -108,9 +108,9 @@ Before routing reads or authoritative writes to the new database, verify:
 Change the mapping so the new replica set becomes main:
 
 ```go
-mappingOption := db.WithVShardMapping(
+mappingOption := db.WithVirtualShardMapping(
     "new-shard",
-    pgmesh.VShardRange(0, 128),
+    pgmesh.VirtualShardRange(0, 128),
 )
 ```
 
@@ -121,9 +121,9 @@ previous verification completes.
 For a rollback window, make `old-shard` a mirror of `new-shard` during cutover:
 
 ```go
-mappingOption := db.WithVShardMapping(
+mappingOption := db.WithVirtualShardMapping(
     "new-shard",
-    pgmesh.VShardRange(0, 128),
+    pgmesh.VirtualShardRange(0, 128),
     "old-shard",
 )
 ```

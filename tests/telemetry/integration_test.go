@@ -84,7 +84,7 @@ func TestPostgresQueryGroupFactoryTelemetryHierarchy(t *testing.T) {
 	physicalSpans := make([]sdktrace.ReadOnlySpan, 0, 1)
 	for _, span := range spans {
 		switch {
-		case strings.HasPrefix(span.Name(), "pgmesh.query.wrapper."):
+		case strings.HasPrefix(span.Name(), "pgmesh.query.store."):
 			wrapperSpans = append(wrapperSpans, span)
 		case strings.HasPrefix(span.Name(), "pgmesh.query.logical."):
 			logicalSpans = append(logicalSpans, span)
@@ -102,7 +102,7 @@ func TestPostgresQueryGroupFactoryTelemetryHierarchy(t *testing.T) {
 	delegated := make([]bool, 0, len(wrapperSpans))
 	for _, span := range wrapperSpans {
 		attributes := spanAttributeMap(span)
-		executed, ok := attributes[pgmesh.AttributeWrapperDelegated].(bool)
+		executed, ok := attributes[pgmesh.AttributeStoreDelegated].(bool)
 		require.True(t, ok)
 		delegated = append(delegated, executed)
 		if executed {
@@ -112,7 +112,7 @@ func TestPostgresQueryGroupFactoryTelemetryHierarchy(t *testing.T) {
 	assert.Equal(t, []bool{true, false}, delegated)
 	assert.Equal(t, delegatedWrapperID, logicalSpans[0].Parent().SpanID().String())
 	assert.Equal(t, logicalSpans[0].SpanContext().SpanID(), physicalSpans[0].Parent().SpanID())
-	assert.NotContains(t, spanAttributeMap(physicalSpans[0]), pgmesh.AttributeWrapperDelegated)
+	assert.NotContains(t, spanAttributeMap(physicalSpans[0]), pgmesh.AttributeStoreDelegated)
 }
 
 func spanAttributeMap(span sdktrace.ReadOnlySpan) map[string]any {

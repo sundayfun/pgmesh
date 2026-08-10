@@ -34,13 +34,13 @@ type telemetrySettingsStore[SK any] struct {
 }
 
 func (q *telemetrySettingsStore[SK]) GetSetting(ctx context.Context, key string, storeOptions ...QueryOption) (result *ApplicationSetting, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Settings", "GetSetting", pgmesh.QueryKindRead)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Settings", "GetSetting", pgmesh.QueryKindRead)
 	defer func() { storeSpan.End(err) }()
 	return q.target.GetSetting(ctx, key, storeOptions...)
 }
 
 func (q *telemetrySettingsStore[SK]) UpsertSetting(ctx context.Context, arg *UpsertSettingT, storeOptions ...QueryOption) (result *ApplicationSetting, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Settings", "UpsertSetting", pgmesh.QueryKindWrite)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Settings", "UpsertSetting", pgmesh.QueryKindWrite)
 	defer func() { storeSpan.End(err) }()
 	return q.target.UpsertSetting(ctx, arg, storeOptions...)
 }
@@ -62,12 +62,12 @@ func (q *meshStore[SK]) Settings() Settings {
 // GetSetting executes the generated query on its target shard.
 func (q *groupedMeshStore[SK]) GetSetting(ctx context.Context, key string, storeOptions ...QueryOption) (result *ApplicationSetting, err error) {
 	// Trace the query and record its returned error.
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Settings", "GetSetting", pgmesh.QueryKindRead)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Settings", "GetSetting", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()
 
 	// Resolve the shard key for this topology.
 	var shardKey SK
-	shard, err := q.store.mesh.Shard(shardKey)
+	shard, err := q.store.mesh.Resolve(shardKey)
 	if err != nil {
 		return result, err
 	}
@@ -78,26 +78,26 @@ func (q *groupedMeshStore[SK]) GetSetting(ctx context.Context, key string, store
 	switch {
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
-		querySpan.SetRoute(pgmesh.RouteModeTransaction)
+		querySpan.SetRoute(pgmesh.RouteModeTransaction, 1)
 		route := shard.WriteRoute()
 		target := route.Target.WithTx(options.tx)
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
 		defer func() { physicalQuerySpan.End(err) }()
 		return target.GetSetting(ctx, key)
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
-		querySpan.SetRoute(pgmesh.RouteModePrimary)
+		querySpan.SetRoute(pgmesh.RouteModePrimary, 1)
 		route := shard.WriteRoute()
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
 		defer func() { physicalQuerySpan.End(err) }()
 		return route.Target.GetSetting(ctx, key)
 
 	// Ordinary reads use the shard's replica route.
 	default:
-		querySpan.SetRoute(pgmesh.RouteModeRead)
+		querySpan.SetRoute(pgmesh.RouteModeRead, 1)
 		route := shard.ReadRoute()
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
 		defer func() { physicalQuerySpan.End(err) }()
 		return route.Target.GetSetting(ctx, key)
 	}
@@ -106,12 +106,12 @@ func (q *groupedMeshStore[SK]) GetSetting(ctx context.Context, key string, store
 // UpsertSetting executes the generated query on its target shard.
 func (q *groupedMeshStore[SK]) UpsertSetting(ctx context.Context, arg *UpsertSettingT, storeOptions ...QueryOption) (result *ApplicationSetting, err error) {
 	// Trace the query and record its returned error.
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Settings", "UpsertSetting", pgmesh.QueryKindWrite)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Settings", "UpsertSetting", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()
 
 	// Resolve the shard key for this topology.
 	var shardKey SK
-	shard, err := q.store.mesh.Shard(shardKey)
+	shard, err := q.store.mesh.Resolve(shardKey)
 	if err != nil {
 		return result, err
 	}
@@ -129,8 +129,8 @@ func (q *groupedMeshStore[SK]) UpsertSetting(ctx context.Context, arg *UpsertSet
 	}
 
 	// Execute the write after recording its resolved route.
-	querySpan.SetRoute(mode)
-	ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), mode)
+	querySpan.SetRoute(mode, 1)
+	ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), mode)
 	defer func() { physicalQuerySpan.End(err) }()
 	return target.UpsertSetting(ctx, arg)
 }

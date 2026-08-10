@@ -16,7 +16,7 @@ type shardDatabase struct {
 
 type shardMapping struct {
 	mainReplicaSet    string
-	vshards           []uint64
+	virtualShards     []uint64
 	mirrorReplicaSets []string
 }
 
@@ -38,29 +38,29 @@ func WithReplicaSet(name string, primary DBTX, replicas ...DBTX) ShardedOption {
 	}
 }
 
-// WithVShardMapping maps virtual shards to a main replica set and optional ordered write mirrors.
-func WithVShardMapping(mainReplicaSet string, vshards []uint64, mirrorReplicaSets ...string) ShardedOption {
-	configuredVShards := append([]uint64(nil), vshards...)
+// WithVirtualShardMapping maps virtual shards to a main replica set and optional ordered write mirrors.
+func WithVirtualShardMapping(mainReplicaSet string, virtualShards []uint64, mirrorReplicaSets ...string) ShardedOption {
+	configuredVirtualShards := append([]uint64(nil), virtualShards...)
 	configuredMirrors := append([]string(nil), mirrorReplicaSets...)
 	return func(options *shardedOptions) {
 		options.mappings = append(options.mappings, shardMapping{
 			mainReplicaSet:    mainReplicaSet,
-			vshards:           append([]uint64(nil), configuredVShards...),
+			virtualShards:     append([]uint64(nil), configuredVirtualShards...),
 			mirrorReplicaSets: append([]string(nil), configuredMirrors...),
 		})
 	}
 }
 
 type shardedTopology[SK any] struct {
-	numVShards  uint64
-	shardHasher pgmesh.ShardHasher[SK]
-	resolver    ShardResolver[SK]
-	options     shardedOptions
-	err         error
+	virtualShardCount uint64
+	shardHasher       pgmesh.ShardHasher[SK]
+	resolver          ShardResolver[SK]
+	options           shardedOptions
+	err               error
 }
 
 // Sharded returns an opaque sharded topology.
-func Sharded[SK any](numVShards uint64, shardHasher pgmesh.ShardHasher[SK], resolver ShardResolver[SK], options ...ShardedOption) Topology {
+func Sharded[SK any](virtualShardCount uint64, shardHasher pgmesh.ShardHasher[SK], resolver ShardResolver[SK], options ...ShardedOption) Topology {
 	var configured shardedOptions
 	for index, option := range options {
 		if option == nil {
@@ -69,10 +69,10 @@ func Sharded[SK any](numVShards uint64, shardHasher pgmesh.ShardHasher[SK], reso
 		option(&configured)
 	}
 	return shardedTopology[SK]{
-		numVShards:  numVShards,
-		shardHasher: shardHasher,
-		resolver:    resolver,
-		options:     configured,
+		virtualShardCount: virtualShardCount,
+		shardHasher:       shardHasher,
+		resolver:          resolver,
+		options:           configured,
 	}
 }
 
@@ -84,7 +84,7 @@ func (c shardedTopology[SK]) buildStore(ctx context.Context, options storeOption
 		return nil, fmt.Errorf("pgmesh: shard resolver is nil")
 	}
 	nodes := make(map[string]DBTX)
-	meshOptions := make([]pgmesh.MeshOption, 0, len(c.options.replicaSets)+len(c.options.mappings)+3)
+	meshOptions := make([]pgmesh.OpenMeshOption, 0, len(c.options.replicaSets)+len(c.options.mappings)+3)
 	for setIndex, set := range c.options.replicaSets {
 		primaryDSN := fmt.Sprintf("pgmesh-internal://%d/primary", setIndex)
 		nodes[primaryDSN] = set.primary
@@ -97,9 +97,9 @@ func (c shardedTopology[SK]) buildStore(ctx context.Context, options storeOption
 		meshOptions = append(meshOptions, pgmesh.WithReplicaSet(set.name, primaryDSN, replicaDSNs...))
 	}
 	for _, mapping := range c.options.mappings {
-		meshOptions = append(meshOptions, pgmesh.WithVShardMapping(
+		meshOptions = append(meshOptions, pgmesh.WithVirtualShardMapping(
 			mapping.mainReplicaSet,
-			mapping.vshards,
+			mapping.virtualShards,
 			mapping.mirrorReplicaSets...,
 		))
 	}
@@ -108,7 +108,7 @@ func (c shardedTopology[SK]) buildStore(ctx context.Context, options storeOption
 		pgmesh.WithMeterProvider(options.meterProvider),
 		pgmesh.WithLogger(options.logger),
 	)
-	mesh, err := pgmesh.CreateMesh(ctx, c.numVShards,
+	mesh, err := pgmesh.OpenMesh(ctx, c.virtualShardCount,
 		func(_ context.Context, dsn string) (pgmesh.Node[*readQueries, *queryStore], error) {
 			database, ok := nodes[dsn]
 			if !ok || database == nil {

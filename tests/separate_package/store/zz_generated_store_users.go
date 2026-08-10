@@ -128,13 +128,13 @@ type telemetryUsersStore[SK any] struct {
 }
 
 func (q *telemetryUsersStore[SK]) CopyUsers(ctx context.Context, arg []*CopyUsersT, storeOptions ...QueryOption) (result int64, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "CopyUsers", pgmesh.QueryKindWrite)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Users", "CopyUsers", pgmesh.QueryKindWrite)
 	defer func() { storeSpan.End(err) }()
 	return q.target.CopyUsers(ctx, arg, storeOptions...)
 }
 
 func (q *telemetryUsersStore[SK]) CopyUsersAsync(ctx context.Context, arg []*CopyUsersT) *pgmesh.Future[int64] {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "CopyUsersAsync", pgmesh.QueryKindWrite)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Users", "CopyUsersAsync", pgmesh.QueryKindWrite)
 	future := q.target.CopyUsersAsync(ctx, arg)
 	return pgmesh.RunFuture(func() (int64, error) {
 		count, err := future.Await(context.Background())
@@ -148,43 +148,43 @@ func (q *telemetryUsersStore[SK]) FlushCopyUsers(ctx context.Context) error {
 }
 
 func (q *telemetryUsersStore[SK]) CreateUser(ctx context.Context, arg *CreateUserT, storeOptions ...QueryOption) (result *User, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "CreateUser", pgmesh.QueryKindWrite)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Users", "CreateUser", pgmesh.QueryKindWrite)
 	defer func() { storeSpan.End(err) }()
 	return q.target.CreateUser(ctx, arg, storeOptions...)
 }
 
 func (q *telemetryUsersStore[SK]) DeleteAllUsers(ctx context.Context, storeOptions ...QueryOption) (err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "DeleteAllUsers", pgmesh.QueryKindWrite)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Users", "DeleteAllUsers", pgmesh.QueryKindWrite)
 	defer func() { storeSpan.End(err) }()
 	return q.target.DeleteAllUsers(ctx, storeOptions...)
 }
 
 func (q *telemetryUsersStore[SK]) DeleteAllUsersByName(ctx context.Context, name string, storeOptions ...QueryOption) (result int64, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "DeleteAllUsersByName", pgmesh.QueryKindWrite)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Users", "DeleteAllUsersByName", pgmesh.QueryKindWrite)
 	defer func() { storeSpan.End(err) }()
 	return q.target.DeleteAllUsersByName(ctx, name, storeOptions...)
 }
 
 func (q *telemetryUsersStore[SK]) GetUser(ctx context.Context, arg *GetUserT, storeOptions ...QueryOption) (result *User, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "GetUser", pgmesh.QueryKindRead)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Users", "GetUser", pgmesh.QueryKindRead)
 	defer func() { storeSpan.End(err) }()
 	return q.target.GetUser(ctx, arg, storeOptions...)
 }
 
 func (q *telemetryUsersStore[SK]) ListAllUsers(ctx context.Context, storeOptions ...QueryOption) (result []*User, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "ListAllUsers", pgmesh.QueryKindRead)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Users", "ListAllUsers", pgmesh.QueryKindRead)
 	defer func() { storeSpan.End(err) }()
 	return q.target.ListAllUsers(ctx, storeOptions...)
 }
 
 func (q *telemetryUsersStore[SK]) ListUsersByIDs(ctx context.Context, arg []*ListUsersByIDsT, storeOptions ...QueryOption) (result []*User, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "ListUsersByIDs", pgmesh.QueryKindRead)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Users", "ListUsersByIDs", pgmesh.QueryKindRead)
 	defer func() { storeSpan.End(err) }()
 	return q.target.ListUsersByIDs(ctx, arg, storeOptions...)
 }
 
 func (q *telemetryUsersStore[SK]) UpdateUserName(ctx context.Context, arg *UpdateUserNameT, storeOptions ...QueryOption) (result *User, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Users", "UpdateUserName", pgmesh.QueryKindWrite)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Users", "UpdateUserName", pgmesh.QueryKindWrite)
 	defer func() { storeSpan.End(err) }()
 	return q.target.UpdateUserName(ctx, arg, storeOptions...)
 }
@@ -205,12 +205,12 @@ func (q *meshStore[SK]) Users() Users {
 
 // CopyUsers groups rows by physical shard and executes one copy per group.
 func (q *groupedMeshStore[SK]) CopyUsers(ctx context.Context, arg []*CopyUsersT, storeOptions ...QueryOption) (result int64, err error) {
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "CopyUsers", pgmesh.QueryKindWrite)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Users", "CopyUsers", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()
 
 	options := applyQueryOptions(storeOptions...)
 	type copyShardGroup struct {
-		shard *pgmesh.Shard[*readQueries, *queryStore]
+		shard pgmesh.ResolvedShard[*readQueries, *queryStore]
 		args  []*db.CopyUsersParams
 	}
 	groupsByName := make(map[string]*copyShardGroup)
@@ -219,27 +219,27 @@ func (q *groupedMeshStore[SK]) CopyUsers(ctx context.Context, arg []*CopyUsersT,
 		if q.store.resolver != nil {
 			shardKey = q.store.resolver.TenantKey(item.TenantKey)
 		}
-		shard, routeErr := q.store.mesh.Shard(shardKey)
+		shard, routeErr := q.store.mesh.Resolve(shardKey)
 		if routeErr != nil {
 			err = fmt.Errorf("route CopyUsers input %d: %w", inputIndex, routeErr)
 			return result, err
 		}
-		shardGroup := groupsByName[shard.Name()]
+		shardGroup := groupsByName[shard.ReplicaSetName()]
 		if shardGroup == nil {
 			shardGroup = &copyShardGroup{shard: shard, args: make([]*db.CopyUsersParams, 0)}
-			groupsByName[shard.Name()] = shardGroup
+			groupsByName[shard.ReplicaSetName()] = shardGroup
 		}
 		shardGroup.args = append(shardGroup.args, item.sqlcParams())
 	}
 
 	groups := make([]*copyShardGroup, 0, len(groupsByName))
-	for _, shard := range q.store.mesh.AllShards() {
-		if shardGroup := groupsByName[shard.Name()]; shardGroup != nil {
+	for _, replicaSet := range q.store.mesh.ReplicaSets() {
+		if shardGroup := groupsByName[replicaSet.Name()]; shardGroup != nil {
 			groups = append(groups, shardGroup)
 		}
 	}
 	if options.tx != nil && len(groups) > 1 {
-		querySpan.SetMultiRoute(pgmesh.RouteModeTransaction, len(groups))
+		querySpan.SetRoute(pgmesh.RouteModeTransaction, len(groups))
 		err = pgmesh.ErrCrossShardTransaction
 		return result, err
 	}
@@ -248,7 +248,7 @@ func (q *groupedMeshStore[SK]) CopyUsers(ctx context.Context, arg []*CopyUsersT,
 	if options.tx != nil {
 		mode = pgmesh.RouteModeTransaction
 	}
-	querySpan.SetMultiRoute(mode, len(groups))
+	querySpan.SetRoute(mode, len(groups))
 	if len(groups) == 0 {
 		return result, err
 	}
@@ -266,7 +266,7 @@ func (q *groupedMeshStore[SK]) CopyUsers(ctx context.Context, arg []*CopyUsersT,
 			if options.tx != nil {
 				target = target.WithTx(options.tx)
 			}
-			queryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
+			queryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
 			copyResults[index].count, copyResults[index].err = target.CopyUsers(queryCtx, shardGroup.args)
 			physicalQuerySpan.End(copyResults[index].err)
 		})
@@ -276,7 +276,7 @@ func (q *groupedMeshStore[SK]) CopyUsers(ctx context.Context, arg []*CopyUsersT,
 	copyErrors := make([]error, 0, len(groups))
 	for index, copyResult := range copyResults {
 		if copyResult.err != nil {
-			copyErrors = append(copyErrors, fmt.Errorf("query CopyUsers on replica set %q: %w", groups[index].shard.Name(), copyResult.err))
+			copyErrors = append(copyErrors, fmt.Errorf("query CopyUsers on replica set %q: %w", groups[index].shard.ReplicaSetName(), copyResult.err))
 		}
 	}
 	err = errors.Join(copyErrors...)
@@ -291,7 +291,7 @@ func (q *groupedMeshStore[SK]) CopyUsers(ctx context.Context, arg []*CopyUsersT,
 
 // CopyUsersAsync accepts rows for asynchronous COPY.
 func (q *groupedMeshStore[SK]) CopyUsersAsync(ctx context.Context, arg []*CopyUsersT) *pgmesh.Future[int64] {
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "CopyUsersAsync", pgmesh.QueryKindWrite)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Users", "CopyUsersAsync", pgmesh.QueryKindWrite)
 	finish := func(future *pgmesh.Future[int64]) *pgmesh.Future[int64] {
 		return pgmesh.RunFuture(func() (int64, error) {
 			count, err := future.Await(context.Background())
@@ -301,7 +301,7 @@ func (q *groupedMeshStore[SK]) CopyUsersAsync(ctx context.Context, arg []*CopyUs
 	}
 
 	type asyncCopyShardGroup struct {
-		shard   *pgmesh.Shard[*readQueries, *queryStore]
+		shard   pgmesh.ResolvedShard[*readQueries, *queryStore]
 		args    []*db.CopyUsersParams
 		batcher *pgmesh.CopyBatcher[*db.CopyUsersParams]
 	}
@@ -311,25 +311,25 @@ func (q *groupedMeshStore[SK]) CopyUsersAsync(ctx context.Context, arg []*CopyUs
 		if q.store.resolver != nil {
 			shardKey = q.store.resolver.TenantKey(item.TenantKey)
 		}
-		shard, routeErr := q.store.mesh.Shard(shardKey)
+		shard, routeErr := q.store.mesh.Resolve(shardKey)
 		if routeErr != nil {
 			err := fmt.Errorf("route CopyUsersAsync input %d: %w", inputIndex, routeErr)
 			return finish(pgmesh.ResolvedFuture[int64](0, err))
 		}
-		shardGroup := groupsByName[shard.Name()]
+		shardGroup := groupsByName[shard.ReplicaSetName()]
 		if shardGroup == nil {
 			shardGroup = &asyncCopyShardGroup{shard: shard, args: make([]*db.CopyUsersParams, 0)}
-			groupsByName[shard.Name()] = shardGroup
+			groupsByName[shard.ReplicaSetName()] = shardGroup
 		}
 		shardGroup.args = append(shardGroup.args, item.sqlcParams())
 	}
 	groups := make([]*asyncCopyShardGroup, 0, len(groupsByName))
-	for _, shard := range q.store.mesh.AllShards() {
-		if shardGroup := groupsByName[shard.Name()]; shardGroup != nil {
+	for _, replicaSet := range q.store.mesh.ReplicaSets() {
+		if shardGroup := groupsByName[replicaSet.Name()]; shardGroup != nil {
 			groups = append(groups, shardGroup)
 		}
 	}
-	querySpan.SetMultiRoute(pgmesh.RouteModePrimary, len(groups))
+	querySpan.SetRoute(pgmesh.RouteModePrimary, len(groups))
 	if len(groups) == 0 {
 		return finish(pgmesh.ResolvedFuture[int64](0, nil))
 	}
@@ -340,10 +340,10 @@ func (q *groupedMeshStore[SK]) CopyUsersAsync(ctx context.Context, arg []*CopyUs
 		return finish(pgmesh.ResolvedFuture[int64](0, err))
 	}
 	for _, shardGroup := range groups {
-		shardGroup.batcher = state.batchers[shardGroup.shard.Name()]
+		shardGroup.batcher = state.batchers[shardGroup.shard.ReplicaSetName()]
 		if shardGroup.batcher == nil {
 			state.mu.Unlock()
-			err := fmt.Errorf("query CopyUsersAsync has no copy batcher for replica set %q", shardGroup.shard.Name())
+			err := fmt.Errorf("query CopyUsersAsync has no copy batcher for replica set %q", shardGroup.shard.ReplicaSetName())
 			return finish(pgmesh.ResolvedFuture[int64](0, err))
 		}
 	}
@@ -358,9 +358,9 @@ func (q *groupedMeshStore[SK]) CopyUsersAsync(ctx context.Context, arg []*CopyUs
 		if state.enabled {
 			future = shardGroup.batcher.Submit(acceptedContext, shardGroup.args)
 		} else {
-			future = shardGroup.batcher.SubmitImmediate(acceptedContext, shardGroup.args)
+			future = shardGroup.batcher.SubmitUnbatched(acceptedContext, shardGroup.args)
 		}
-		asyncResults = append(asyncResults, asyncCopyResult{shardName: shardGroup.shard.Name(), future: future})
+		asyncResults = append(asyncResults, asyncCopyResult{shardName: shardGroup.shard.ReplicaSetName(), future: future})
 	}
 	state.mu.Unlock()
 
@@ -391,10 +391,10 @@ func (q *groupedMeshStore[SK]) FlushCopyUsers(ctx context.Context) error {
 		shardName string
 		future    *pgmesh.Future[struct{}]
 	}
-	flushes := make([]copyFlushResult, 0, len(q.store.mesh.AllShards()))
-	for _, shard := range q.store.mesh.AllShards() {
-		if batcher := state.batchers[shard.Name()]; batcher != nil {
-			flushes = append(flushes, copyFlushResult{shardName: shard.Name(), future: batcher.FlushAsync()})
+	flushes := make([]copyFlushResult, 0, len(q.store.mesh.ReplicaSets()))
+	for _, replicaSet := range q.store.mesh.ReplicaSets() {
+		if batcher := state.batchers[replicaSet.Name()]; batcher != nil {
+			flushes = append(flushes, copyFlushResult{shardName: replicaSet.Name(), future: batcher.FlushAsync()})
 		}
 	}
 	state.mu.Unlock()
@@ -413,7 +413,7 @@ func (q *groupedMeshStore[SK]) FlushCopyUsers(ctx context.Context) error {
 // CreateUser executes the generated query on its target shard.
 func (q *groupedMeshStore[SK]) CreateUser(ctx context.Context, arg *CreateUserT, storeOptions ...QueryOption) (result *db.User, err error) {
 	// Trace the query and record its returned error.
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "CreateUser", pgmesh.QueryKindWrite)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Users", "CreateUser", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()
 
 	// Resolve the shard key for this topology.
@@ -421,7 +421,7 @@ func (q *groupedMeshStore[SK]) CreateUser(ctx context.Context, arg *CreateUserT,
 	if q.store.resolver != nil {
 		shardKey = q.store.resolver.TenantKey(arg.TenantKey)
 	}
-	shard, err := q.store.mesh.Shard(shardKey)
+	shard, err := q.store.mesh.Resolve(shardKey)
 	if err != nil {
 		return result, err
 	}
@@ -439,47 +439,47 @@ func (q *groupedMeshStore[SK]) CreateUser(ctx context.Context, arg *CreateUserT,
 	}
 
 	// Execute the write after recording its resolved route.
-	querySpan.SetRoute(mode)
-	ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), mode)
+	querySpan.SetRoute(mode, 1)
+	ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), mode)
 	defer func() { physicalQuerySpan.End(err) }()
 	return target.CreateUser(ctx, arg.sqlcParams())
 }
 
 // DeleteAllUsers executes the generated query on every physical shard.
 func (q *groupedMeshStore[SK]) DeleteAllUsers(ctx context.Context, storeOptions ...QueryOption) (err error) {
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "DeleteAllUsers", pgmesh.QueryKindWrite)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Users", "DeleteAllUsers", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()
 
 	options := applyQueryOptions(storeOptions...)
-	shards := q.store.mesh.AllShards()
+	replicaSets := q.store.mesh.ReplicaSets()
 	if options.tx != nil {
-		querySpan.SetMultiRoute(pgmesh.RouteModeTransaction, len(shards))
+		querySpan.SetRoute(pgmesh.RouteModeTransaction, len(replicaSets))
 		err = pgmesh.ErrCrossShardTransaction
 		return err
 	}
 
 	mode := pgmesh.RouteModePrimary
-	querySpan.SetMultiRoute(mode, len(shards))
+	querySpan.SetRoute(mode, len(replicaSets))
 
 	type shardResult struct {
 		err error
 	}
-	shardResults := make([]shardResult, len(shards))
+	shardResults := make([]shardResult, len(replicaSets))
 	var group sync.WaitGroup
-	for index, shard := range shards {
+	for index, replicaSet := range replicaSets {
 		group.Go(func() {
-			route := shard.WriteRoute()
-			queryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
+			route := replicaSet.WriteRoute()
+			queryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), mode)
 			shardResults[index].err = route.Target.DeleteAllUsers(queryCtx)
 			physicalQuerySpan.End(shardResults[index].err)
 		})
 	}
 	group.Wait()
 
-	shardErrors := make([]error, 0, len(shards))
+	shardErrors := make([]error, 0, len(replicaSets))
 	for index, shardResult := range shardResults {
 		if shardResult.err != nil {
-			shardErrors = append(shardErrors, fmt.Errorf("query DeleteAllUsers on replica set %q: %w", shards[index].Name(), shardResult.err))
+			shardErrors = append(shardErrors, fmt.Errorf("query DeleteAllUsers on replica set %q: %w", replicaSets[index].Name(), shardResult.err))
 		}
 	}
 	err = errors.Join(shardErrors...)
@@ -491,40 +491,40 @@ func (q *groupedMeshStore[SK]) DeleteAllUsers(ctx context.Context, storeOptions 
 
 // DeleteAllUsersByName executes the generated query on every physical shard.
 func (q *groupedMeshStore[SK]) DeleteAllUsersByName(ctx context.Context, name string, storeOptions ...QueryOption) (result int64, err error) {
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "DeleteAllUsersByName", pgmesh.QueryKindWrite)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Users", "DeleteAllUsersByName", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()
 
 	options := applyQueryOptions(storeOptions...)
-	shards := q.store.mesh.AllShards()
+	replicaSets := q.store.mesh.ReplicaSets()
 	if options.tx != nil {
-		querySpan.SetMultiRoute(pgmesh.RouteModeTransaction, len(shards))
+		querySpan.SetRoute(pgmesh.RouteModeTransaction, len(replicaSets))
 		err = pgmesh.ErrCrossShardTransaction
 		return result, err
 	}
 
 	mode := pgmesh.RouteModePrimary
-	querySpan.SetMultiRoute(mode, len(shards))
+	querySpan.SetRoute(mode, len(replicaSets))
 
 	type shardResult struct {
 		value int64
 		err   error
 	}
-	shardResults := make([]shardResult, len(shards))
+	shardResults := make([]shardResult, len(replicaSets))
 	var group sync.WaitGroup
-	for index, shard := range shards {
+	for index, replicaSet := range replicaSets {
 		group.Go(func() {
-			route := shard.WriteRoute()
-			queryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
+			route := replicaSet.WriteRoute()
+			queryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), mode)
 			shardResults[index].value, shardResults[index].err = route.Target.DeleteAllUsersByName(queryCtx, name)
 			physicalQuerySpan.End(shardResults[index].err)
 		})
 	}
 	group.Wait()
 
-	shardErrors := make([]error, 0, len(shards))
+	shardErrors := make([]error, 0, len(replicaSets))
 	for index, shardResult := range shardResults {
 		if shardResult.err != nil {
-			shardErrors = append(shardErrors, fmt.Errorf("query DeleteAllUsersByName on replica set %q: %w", shards[index].Name(), shardResult.err))
+			shardErrors = append(shardErrors, fmt.Errorf("query DeleteAllUsersByName on replica set %q: %w", replicaSets[index].Name(), shardResult.err))
 		}
 	}
 	err = errors.Join(shardErrors...)
@@ -540,7 +540,7 @@ func (q *groupedMeshStore[SK]) DeleteAllUsersByName(ctx context.Context, name st
 // GetUser executes the generated query on its target shard.
 func (q *groupedMeshStore[SK]) GetUser(ctx context.Context, arg *GetUserT, storeOptions ...QueryOption) (result *db.User, err error) {
 	// Trace the query and record its returned error.
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "GetUser", pgmesh.QueryKindRead)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Users", "GetUser", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()
 
 	// Resolve the shard key for this topology.
@@ -548,7 +548,7 @@ func (q *groupedMeshStore[SK]) GetUser(ctx context.Context, arg *GetUserT, store
 	if q.store.resolver != nil {
 		shardKey = q.store.resolver.TenantKey(arg.TenantKey)
 	}
-	shard, err := q.store.mesh.Shard(shardKey)
+	shard, err := q.store.mesh.Resolve(shardKey)
 	if err != nil {
 		return result, err
 	}
@@ -559,26 +559,26 @@ func (q *groupedMeshStore[SK]) GetUser(ctx context.Context, arg *GetUserT, store
 	switch {
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
-		querySpan.SetRoute(pgmesh.RouteModeTransaction)
+		querySpan.SetRoute(pgmesh.RouteModeTransaction, 1)
 		route := shard.WriteRoute()
 		target := route.Target.WithTx(options.tx)
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
 		defer func() { physicalQuerySpan.End(err) }()
 		return target.GetUser(ctx, arg.sqlcParams())
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
-		querySpan.SetRoute(pgmesh.RouteModePrimary)
+		querySpan.SetRoute(pgmesh.RouteModePrimary, 1)
 		route := shard.WriteRoute()
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
 		defer func() { physicalQuerySpan.End(err) }()
 		return route.Target.GetUser(ctx, arg.sqlcParams())
 
 	// Ordinary reads use the shard's replica route.
 	default:
-		querySpan.SetRoute(pgmesh.RouteModeRead)
+		querySpan.SetRoute(pgmesh.RouteModeRead, 1)
 		route := shard.ReadRoute()
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
 		defer func() { physicalQuerySpan.End(err) }()
 		return route.Target.GetUser(ctx, arg.sqlcParams())
 	}
@@ -586,13 +586,13 @@ func (q *groupedMeshStore[SK]) GetUser(ctx context.Context, arg *GetUserT, store
 
 // ListAllUsers executes the generated query on every physical shard.
 func (q *groupedMeshStore[SK]) ListAllUsers(ctx context.Context, storeOptions ...QueryOption) (result []*db.User, err error) {
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "ListAllUsers", pgmesh.QueryKindRead)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Users", "ListAllUsers", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()
 
 	options := applyQueryOptions(storeOptions...)
-	shards := q.store.mesh.AllShards()
+	replicaSets := q.store.mesh.ReplicaSets()
 	if options.tx != nil {
-		querySpan.SetMultiRoute(pgmesh.RouteModeTransaction, len(shards))
+		querySpan.SetRoute(pgmesh.RouteModeTransaction, len(replicaSets))
 		err = pgmesh.ErrCrossShardTransaction
 		return result, err
 	}
@@ -601,35 +601,35 @@ func (q *groupedMeshStore[SK]) ListAllUsers(ctx context.Context, storeOptions ..
 	if options.primary {
 		mode = pgmesh.RouteModePrimary
 	}
-	querySpan.SetMultiRoute(mode, len(shards))
+	querySpan.SetRoute(mode, len(replicaSets))
 
 	type shardResult struct {
 		value []*db.User
 		err   error
 	}
-	shardResults := make([]shardResult, len(shards))
+	shardResults := make([]shardResult, len(replicaSets))
 	var group sync.WaitGroup
-	for index, shard := range shards {
+	for index, replicaSet := range replicaSets {
 		group.Go(func() {
 			if options.primary {
-				route := shard.WriteRoute()
-				queryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
+				route := replicaSet.WriteRoute()
+				queryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), mode)
 				shardResults[index].value, shardResults[index].err = route.Target.ListAllUsers(queryCtx)
 				physicalQuerySpan.End(shardResults[index].err)
 				return
 			}
-			route := shard.ReadRoute()
-			queryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
+			route := replicaSet.ReadRoute()
+			queryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), mode)
 			shardResults[index].value, shardResults[index].err = route.Target.ListAllUsers(queryCtx)
 			physicalQuerySpan.End(shardResults[index].err)
 		})
 	}
 	group.Wait()
 
-	shardErrors := make([]error, 0, len(shards))
+	shardErrors := make([]error, 0, len(replicaSets))
 	for index, shardResult := range shardResults {
 		if shardResult.err != nil {
-			shardErrors = append(shardErrors, fmt.Errorf("query ListAllUsers on replica set %q: %w", shards[index].Name(), shardResult.err))
+			shardErrors = append(shardErrors, fmt.Errorf("query ListAllUsers on replica set %q: %w", replicaSets[index].Name(), shardResult.err))
 		}
 	}
 	err = errors.Join(shardErrors...)
@@ -644,12 +644,12 @@ func (q *groupedMeshStore[SK]) ListAllUsers(ctx context.Context, storeOptions ..
 
 // ListUsersByIDs groups lookup values by physical shard and restores input-key result order.
 func (q *groupedMeshStore[SK]) ListUsersByIDs(ctx context.Context, arg []*ListUsersByIDsT, storeOptions ...QueryOption) (result []*db.User, err error) {
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "ListUsersByIDs", pgmesh.QueryKindRead)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Users", "ListUsersByIDs", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()
 
 	options := applyQueryOptions(storeOptions...)
 	type manyShardGroup struct {
-		shard     *pgmesh.Shard[*readQueries, *queryStore]
+		shard     pgmesh.ResolvedShard[*readQueries, *queryStore]
 		args      []int64
 		requested map[any]struct{}
 	}
@@ -674,32 +674,32 @@ func (q *groupedMeshStore[SK]) ListUsersByIDs(ctx context.Context, arg []*ListUs
 		if q.store.resolver != nil {
 			shardKey = q.store.resolver.TenantKey(item.TenantKey)
 		}
-		shard, routeErr := q.store.mesh.Shard(shardKey)
+		shard, routeErr := q.store.mesh.Resolve(shardKey)
 		if routeErr != nil {
 			err = fmt.Errorf("route ListUsersByIDs input %d: %w", inputIndex, routeErr)
 			return result, err
 		}
-		shardGroup := groupsByName[shard.Name()]
+		shardGroup := groupsByName[shard.ReplicaSetName()]
 		if shardGroup == nil {
 			shardGroup = &manyShardGroup{shard: shard, args: make([]int64, 0), requested: make(map[any]struct{})}
-			groupsByName[shard.Name()] = shardGroup
+			groupsByName[shard.ReplicaSetName()] = shardGroup
 		}
 		if _, exists := shardGroup.requested[lookupKey]; exists {
 			continue
 		}
 		shardGroup.requested[lookupKey] = struct{}{}
 		shardGroup.args = append(shardGroup.args, lookupValue)
-		orderedItems = append(orderedItems, manyOrderItem{shardName: shard.Name(), key: lookupKey})
+		orderedItems = append(orderedItems, manyOrderItem{shardName: shard.ReplicaSetName(), key: lookupKey})
 	}
 
 	groups := make([]*manyShardGroup, 0, len(groupsByName))
-	for _, shard := range q.store.mesh.AllShards() {
-		if shardGroup := groupsByName[shard.Name()]; shardGroup != nil {
+	for _, replicaSet := range q.store.mesh.ReplicaSets() {
+		if shardGroup := groupsByName[replicaSet.Name()]; shardGroup != nil {
 			groups = append(groups, shardGroup)
 		}
 	}
 	if options.tx != nil && len(groups) > 1 {
-		querySpan.SetMultiRoute(pgmesh.RouteModeTransaction, len(groups))
+		querySpan.SetRoute(pgmesh.RouteModeTransaction, len(groups))
 		err = pgmesh.ErrCrossShardTransaction
 		return result, err
 	}
@@ -711,7 +711,7 @@ func (q *groupedMeshStore[SK]) ListUsersByIDs(ctx context.Context, arg []*ListUs
 	if options.tx != nil {
 		mode = pgmesh.RouteModeTransaction
 	}
-	querySpan.SetMultiRoute(mode, len(groups))
+	querySpan.SetRoute(mode, len(groups))
 	if len(groups) == 0 {
 		return result, err
 	}
@@ -728,17 +728,17 @@ func (q *groupedMeshStore[SK]) ListUsersByIDs(ctx context.Context, arg []*ListUs
 			case options.tx != nil:
 				route := shardGroup.shard.WriteRoute()
 				target := route.Target.WithTx(options.tx)
-				queryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
+				queryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
 				groupResults[index].value, groupResults[index].err = target.ListUsersByIDs(queryCtx, shardGroup.args)
 				physicalQuerySpan.End(groupResults[index].err)
 			case options.primary:
 				route := shardGroup.shard.WriteRoute()
-				queryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
+				queryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
 				groupResults[index].value, groupResults[index].err = route.Target.ListUsersByIDs(queryCtx, shardGroup.args)
 				physicalQuerySpan.End(groupResults[index].err)
 			default:
 				route := shardGroup.shard.ReadRoute()
-				queryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
+				queryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
 				groupResults[index].value, groupResults[index].err = route.Target.ListUsersByIDs(queryCtx, shardGroup.args)
 				physicalQuerySpan.End(groupResults[index].err)
 			}
@@ -749,7 +749,7 @@ func (q *groupedMeshStore[SK]) ListUsersByIDs(ctx context.Context, arg []*ListUs
 	groupErrors := make([]error, 0, len(groups))
 	for index, groupResult := range groupResults {
 		if groupResult.err != nil {
-			groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByIDs on replica set %q: %w", groups[index].shard.Name(), groupResult.err))
+			groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByIDs on replica set %q: %w", groups[index].shard.ReplicaSetName(), groupResult.err))
 		}
 	}
 	err = errors.Join(groupErrors...)
@@ -760,19 +760,19 @@ func (q *groupedMeshStore[SK]) ListUsersByIDs(ctx context.Context, arg []*ListUs
 	rowsByGroup := make(map[string]map[any][]*db.User, len(groups))
 	for groupIndex, groupResult := range groupResults {
 		rowsByKey := make(map[any][]*db.User)
-		rowsByGroup[groups[groupIndex].shard.Name()] = rowsByKey
+		rowsByGroup[groups[groupIndex].shard.ReplicaSetName()] = rowsByKey
 		for resultIndex, row := range groupResult.value {
 			if row == nil {
-				groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByIDs on replica set %q returned nil row at result %d", groups[groupIndex].shard.Name(), resultIndex))
+				groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByIDs on replica set %q returned nil row at result %d", groups[groupIndex].shard.ReplicaSetName(), resultIndex))
 				continue
 			}
 			resultKey := any(row.ID)
 			if resultKey != nil && !reflect.ValueOf(resultKey).Comparable() {
-				groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByIDs on replica set %q result %d has non-comparable lookup key type %T", groups[groupIndex].shard.Name(), resultIndex, resultKey))
+				groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByIDs on replica set %q result %d has non-comparable lookup key type %T", groups[groupIndex].shard.ReplicaSetName(), resultIndex, resultKey))
 				continue
 			}
 			if _, requested := groups[groupIndex].requested[resultKey]; !requested {
-				groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByIDs on replica set %q result %d has an unrequested lookup key", groups[groupIndex].shard.Name(), resultIndex))
+				groupErrors = append(groupErrors, fmt.Errorf("query ListUsersByIDs on replica set %q result %d has an unrequested lookup key", groups[groupIndex].shard.ReplicaSetName(), resultIndex))
 				continue
 			}
 			rowsByKey[resultKey] = append(rowsByKey[resultKey], row)
@@ -792,7 +792,7 @@ func (q *groupedMeshStore[SK]) ListUsersByIDs(ctx context.Context, arg []*ListUs
 // UpdateUserName executes the generated query on its target shard.
 func (q *groupedMeshStore[SK]) UpdateUserName(ctx context.Context, arg *UpdateUserNameT, storeOptions ...QueryOption) (result *db.User, err error) {
 	// Trace the query and record its returned error.
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Users", "UpdateUserName", pgmesh.QueryKindWrite)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Users", "UpdateUserName", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()
 
 	// Resolve the shard key for this topology.
@@ -800,7 +800,7 @@ func (q *groupedMeshStore[SK]) UpdateUserName(ctx context.Context, arg *UpdateUs
 	if q.store.resolver != nil {
 		shardKey = q.store.resolver.TenantKey(arg.TenantKey)
 	}
-	shard, err := q.store.mesh.Shard(shardKey)
+	shard, err := q.store.mesh.Resolve(shardKey)
 	if err != nil {
 		return result, err
 	}
@@ -818,8 +818,8 @@ func (q *groupedMeshStore[SK]) UpdateUserName(ctx context.Context, arg *UpdateUs
 	}
 
 	// Execute the write after recording its resolved route.
-	querySpan.SetRoute(mode)
-	ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), mode)
+	querySpan.SetRoute(mode, 1)
+	ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), mode)
 	defer func() { physicalQuerySpan.End(err) }()
 	return target.UpdateUserName(ctx, arg.sqlcParams())
 }

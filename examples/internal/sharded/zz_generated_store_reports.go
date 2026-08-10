@@ -34,7 +34,7 @@ type telemetryReportsStore[SK any] struct {
 }
 
 func (q *telemetryReportsStore[SK]) CountAccounts(ctx context.Context, arg *CountAccountsT, storeOptions ...QueryOption) (result int64, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Reports", "CountAccounts", pgmesh.QueryKindRead)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Reports", "CountAccounts", pgmesh.QueryKindRead)
 	defer func() { storeSpan.End(err) }()
 	return q.target.CountAccounts(ctx, arg, storeOptions...)
 }
@@ -56,7 +56,7 @@ func (q *meshStore[SK]) Reports() Reports {
 // CountAccounts executes the generated query on its target shard.
 func (q *groupedMeshStore[SK]) CountAccounts(ctx context.Context, arg *CountAccountsT, storeOptions ...QueryOption) (result int64, err error) {
 	// Trace the query and record its returned error.
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Reports", "CountAccounts", pgmesh.QueryKindRead)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Reports", "CountAccounts", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()
 
 	// Resolve the shard key for this topology.
@@ -64,7 +64,7 @@ func (q *groupedMeshStore[SK]) CountAccounts(ctx context.Context, arg *CountAcco
 	if q.store.resolver != nil {
 		shardKey = q.store.resolver.TenantKey(arg.TenantKey)
 	}
-	shard, err := q.store.mesh.Shard(shardKey)
+	shard, err := q.store.mesh.Resolve(shardKey)
 	if err != nil {
 		return result, err
 	}
@@ -75,26 +75,26 @@ func (q *groupedMeshStore[SK]) CountAccounts(ctx context.Context, arg *CountAcco
 	switch {
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
-		querySpan.SetRoute(pgmesh.RouteModeTransaction)
+		querySpan.SetRoute(pgmesh.RouteModeTransaction, 1)
 		route := shard.WriteRoute()
 		target := route.Target.WithTx(options.tx)
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
 		defer func() { physicalQuerySpan.End(err) }()
 		return target.CountAccounts(ctx, arg.TenantKey.TenantID)
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
-		querySpan.SetRoute(pgmesh.RouteModePrimary)
+		querySpan.SetRoute(pgmesh.RouteModePrimary, 1)
 		route := shard.WriteRoute()
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
 		defer func() { physicalQuerySpan.End(err) }()
 		return route.Target.CountAccounts(ctx, arg.TenantKey.TenantID)
 
 	// Ordinary reads use the shard's replica route.
 	default:
-		querySpan.SetRoute(pgmesh.RouteModeRead)
+		querySpan.SetRoute(pgmesh.RouteModeRead, 1)
 		route := shard.ReadRoute()
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
 		defer func() { physicalQuerySpan.End(err) }()
 		return route.Target.CountAccounts(ctx, arg.TenantKey.TenantID)
 	}

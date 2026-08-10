@@ -6,7 +6,7 @@ import "strconv"
 // readers, while writes always use the primary writer and its configured
 // synchronous mirrors. ReplicaSet routing is safe for concurrent use when the
 // configured nodes and writer values are safe for concurrent use.
-type ReplicaSet[R any, W Mirrorable[W]] struct {
+type ReplicaSet[R any, W MirrorableWriter[W]] struct {
 	name         string
 	primary      Node[R, W]
 	readTargets  *roundRobin[nodeTarget[R]]
@@ -21,7 +21,7 @@ type nodeTarget[T any] struct {
 
 // NewReplicaSet creates a physical replica set. If replicas is empty, reads
 // fall back to the primary node.
-func NewReplicaSet[R any, W Mirrorable[W]](
+func NewReplicaSet[R any, W MirrorableWriter[W]](
 	name string,
 	primary Node[R, W],
 	replicas []Node[R, W],
@@ -55,18 +55,48 @@ func (s *ReplicaSet[R, W]) Name() string {
 	return s.name
 }
 
-// Read returns the next read view selected by round-robin balancing.
-func (s *ReplicaSet[R, W]) Read() R {
-	return s.selectRead().value
+// Reader returns the next read view selected by round-robin balancing.
+func (s *ReplicaSet[R, W]) Reader() R {
+	return s.ReadRoute().Target
 }
 
-// Write returns the primary write view configured with synchronous mirrors.
-func (s *ReplicaSet[R, W]) Write() W {
-	return s.selectWrite().value
+// Writer returns the primary write view configured with synchronous mirrors.
+func (s *ReplicaSet[R, W]) Writer() W {
+	return s.WriteRoute().Target
+}
+
+// ReadRoute selects and describes the next read target in the replica set.
+func (s *ReplicaSet[R, W]) ReadRoute() Route[R] {
+	target := s.selectRead()
+	return Route[R]{
+		Target: target.value,
+		metadata: RouteMetadata{
+			VirtualShardIndex: 0,
+			HasVirtualShard:   false,
+			ReplicaSetName:    s.name,
+			NodeName:          target.name,
+			NodeRole:          target.role,
+		},
+	}
+}
+
+// WriteRoute selects and describes the replica set's primary write target.
+func (s *ReplicaSet[R, W]) WriteRoute() Route[W] {
+	target := s.selectWrite()
+	return Route[W]{
+		Target: target.value,
+		metadata: RouteMetadata{
+			VirtualShardIndex: 0,
+			HasVirtualShard:   false,
+			ReplicaSetName:    s.name,
+			NodeName:          target.name,
+			NodeRole:          target.role,
+		},
+	}
 }
 
 func (s *ReplicaSet[R, W]) selectRead() nodeTarget[R] {
-	return s.readTargets.Next()
+	return s.readTargets.nextItem()
 }
 
 func (s *ReplicaSet[R, W]) selectWrite() nodeTarget[W] {
@@ -87,15 +117,15 @@ func (s *ReplicaSet[R, W]) primaryWriter() W {
 }
 
 // WithWriteMirrors returns a copy with writes appended to its synchronous
-// mirrors. It does not mutate the receiver, and Write passes mirrors to the
+// mirrors. It does not mutate the receiver, and Writer passes mirrors to the
 // writer in the same order in which they were configured.
-func (s *ReplicaSet[R, W]) WithWriteMirrors(writes ...W) *ReplicaSet[R, W] {
-	mirrors := append([]W(nil), s.writeMirrors...)
-	mirrors = append(mirrors, writes...)
+func (s *ReplicaSet[R, W]) WithWriteMirrors(mirrors ...W) *ReplicaSet[R, W] {
+	configuredMirrors := append([]W(nil), s.writeMirrors...)
+	configuredMirrors = append(configuredMirrors, mirrors...)
 	return &ReplicaSet[R, W]{
 		name:         s.name,
 		primary:      s.primary,
 		readTargets:  s.readTargets,
-		writeMirrors: mirrors,
+		writeMirrors: configuredMirrors,
 	}
 }

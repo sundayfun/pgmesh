@@ -11,7 +11,7 @@ import (
 	"github.com/sundayfun/pgmesh/examples/internal/sharded"
 )
 
-const numVShards = 128
+const virtualShardCount = 128
 
 type (
 	accountStore  = sharded.Store
@@ -51,13 +51,13 @@ func newAccountQueries(
 	store, err := sharded.NewStore(
 		ctx,
 		sharded.Sharded(
-			numVShards,
-			pgmesh.ModularShardHashFor[uint64](numVShards),
+			virtualShardCount,
+			pgmesh.NewModuloShardHasher[uint64](virtualShardCount),
 			tenantResolver{},
 			sharded.WithReplicaSet("shard-0", shard0Primary, shard0Replica),
 			sharded.WithReplicaSet("shard-1", shard1Primary, shard1Replica),
-			sharded.WithVShardMapping("shard-0", pgmesh.VShardRange(0, 64)),
-			sharded.WithVShardMapping("shard-1", pgmesh.VShardRange(64, numVShards)),
+			sharded.WithVirtualShardMapping("shard-0", pgmesh.VirtualShardRange(0, 64)),
+			sharded.WithVirtualShardMapping("shard-1", pgmesh.VirtualShardRange(64, virtualShardCount)),
 		),
 		sharded.WithLogger(slog.New(slog.NewTextHandler(
 			os.Stderr,

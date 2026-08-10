@@ -59,13 +59,13 @@ type telemetryAnalysesStore[SK any] struct {
 }
 
 func (q *telemetryAnalysesStore[SK]) GetAnalysis(ctx context.Context, arg *GetAnalysisT, storeOptions ...QueryOption) (result *Analysis, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Analyses", "GetAnalysis", pgmesh.QueryKindRead)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Analyses", "GetAnalysis", pgmesh.QueryKindRead)
 	defer func() { storeSpan.End(err) }()
 	return q.target.GetAnalysis(ctx, arg, storeOptions...)
 }
 
 func (q *telemetryAnalysesStore[SK]) GetTenantUserAnalysis(ctx context.Context, arg *GetTenantUserAnalysisT, storeOptions ...QueryOption) (result *GetTenantUserAnalysisRow, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Analyses", "GetTenantUserAnalysis", pgmesh.QueryKindRead)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Analyses", "GetTenantUserAnalysis", pgmesh.QueryKindRead)
 	defer func() { storeSpan.End(err) }()
 	return q.target.GetTenantUserAnalysis(ctx, arg, storeOptions...)
 }
@@ -87,7 +87,7 @@ func (q *meshStore[SK]) Analyses() Analyses {
 // GetAnalysis executes the generated query on its target shard.
 func (q *groupedMeshStore[SK]) GetAnalysis(ctx context.Context, arg *GetAnalysisT, storeOptions ...QueryOption) (result *db.Analysis, err error) {
 	// Trace the query and record its returned error.
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Analyses", "GetAnalysis", pgmesh.QueryKindRead)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Analyses", "GetAnalysis", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()
 
 	// Resolve the shard key for this topology.
@@ -95,7 +95,7 @@ func (q *groupedMeshStore[SK]) GetAnalysis(ctx context.Context, arg *GetAnalysis
 	if q.store.resolver != nil {
 		shardKey = q.store.resolver.TenantKey(arg.TenantKey)
 	}
-	shard, err := q.store.mesh.Shard(shardKey)
+	shard, err := q.store.mesh.Resolve(shardKey)
 	if err != nil {
 		return result, err
 	}
@@ -106,26 +106,26 @@ func (q *groupedMeshStore[SK]) GetAnalysis(ctx context.Context, arg *GetAnalysis
 	switch {
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
-		querySpan.SetRoute(pgmesh.RouteModeTransaction)
+		querySpan.SetRoute(pgmesh.RouteModeTransaction, 1)
 		route := shard.WriteRoute()
 		target := route.Target.WithTx(options.tx)
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
 		defer func() { physicalQuerySpan.End(err) }()
 		return target.GetAnalysis(ctx, arg.sqlcParams())
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
-		querySpan.SetRoute(pgmesh.RouteModePrimary)
+		querySpan.SetRoute(pgmesh.RouteModePrimary, 1)
 		route := shard.WriteRoute()
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
 		defer func() { physicalQuerySpan.End(err) }()
 		return route.Target.GetAnalysis(ctx, arg.sqlcParams())
 
 	// Ordinary reads use the shard's replica route.
 	default:
-		querySpan.SetRoute(pgmesh.RouteModeRead)
+		querySpan.SetRoute(pgmesh.RouteModeRead, 1)
 		route := shard.ReadRoute()
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
 		defer func() { physicalQuerySpan.End(err) }()
 		return route.Target.GetAnalysis(ctx, arg.sqlcParams())
 	}
@@ -134,7 +134,7 @@ func (q *groupedMeshStore[SK]) GetAnalysis(ctx context.Context, arg *GetAnalysis
 // GetTenantUserAnalysis executes the generated query on its target shard.
 func (q *groupedMeshStore[SK]) GetTenantUserAnalysis(ctx context.Context, arg *GetTenantUserAnalysisT, storeOptions ...QueryOption) (result *db.GetTenantUserAnalysisRow, err error) {
 	// Trace the query and record its returned error.
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Analyses", "GetTenantUserAnalysis", pgmesh.QueryKindRead)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Analyses", "GetTenantUserAnalysis", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()
 
 	// Resolve the shard key for this topology.
@@ -142,7 +142,7 @@ func (q *groupedMeshStore[SK]) GetTenantUserAnalysis(ctx context.Context, arg *G
 	if q.store.resolver != nil {
 		shardKey = q.store.resolver.TenantKey(arg.TenantKey)
 	}
-	shard, err := q.store.mesh.Shard(shardKey)
+	shard, err := q.store.mesh.Resolve(shardKey)
 	if err != nil {
 		return result, err
 	}
@@ -153,26 +153,26 @@ func (q *groupedMeshStore[SK]) GetTenantUserAnalysis(ctx context.Context, arg *G
 	switch {
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
-		querySpan.SetRoute(pgmesh.RouteModeTransaction)
+		querySpan.SetRoute(pgmesh.RouteModeTransaction, 1)
 		route := shard.WriteRoute()
 		target := route.Target.WithTx(options.tx)
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
 		defer func() { physicalQuerySpan.End(err) }()
 		return target.GetTenantUserAnalysis(ctx, arg.sqlcParams())
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
-		querySpan.SetRoute(pgmesh.RouteModePrimary)
+		querySpan.SetRoute(pgmesh.RouteModePrimary, 1)
 		route := shard.WriteRoute()
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
 		defer func() { physicalQuerySpan.End(err) }()
 		return route.Target.GetTenantUserAnalysis(ctx, arg.sqlcParams())
 
 	// Ordinary reads use the shard's replica route.
 	default:
-		querySpan.SetRoute(pgmesh.RouteModeRead)
+		querySpan.SetRoute(pgmesh.RouteModeRead, 1)
 		route := shard.ReadRoute()
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
 		defer func() { physicalQuerySpan.End(err) }()
 		return route.Target.GetTenantUserAnalysis(ctx, arg.sqlcParams())
 	}

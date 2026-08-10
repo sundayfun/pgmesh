@@ -84,13 +84,13 @@ func (q *telemetryCommandsStore[SK]) BatchListCommandUsersByTenant(ctx context.C
 }
 
 func (q *telemetryCommandsStore[SK]) CopyCommandUsers(ctx context.Context, arg []*CopyCommandUsersT, storeOptions ...QueryOption) (result int64, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Commands", "CopyCommandUsers", pgmesh.QueryKindWrite)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Commands", "CopyCommandUsers", pgmesh.QueryKindWrite)
 	defer func() { storeSpan.End(err) }()
 	return q.target.CopyCommandUsers(ctx, arg, storeOptions...)
 }
 
 func (q *telemetryCommandsStore[SK]) CopyCommandUsersAsync(ctx context.Context, arg []*CopyCommandUsersT) *pgmesh.Future[int64] {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Commands", "CopyCommandUsersAsync", pgmesh.QueryKindWrite)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Commands", "CopyCommandUsersAsync", pgmesh.QueryKindWrite)
 	future := q.target.CopyCommandUsersAsync(ctx, arg)
 	return pgmesh.RunFuture(func() (int64, error) {
 		count, err := future.Await(context.Background())
@@ -104,31 +104,31 @@ func (q *telemetryCommandsStore[SK]) FlushCopyCommandUsers(ctx context.Context) 
 }
 
 func (q *telemetryCommandsStore[SK]) DeleteCommandUser(ctx context.Context, id int64, storeOptions ...QueryOption) (err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Commands", "DeleteCommandUser", pgmesh.QueryKindWrite)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Commands", "DeleteCommandUser", pgmesh.QueryKindWrite)
 	defer func() { storeSpan.End(err) }()
 	return q.target.DeleteCommandUser(ctx, id, storeOptions...)
 }
 
 func (q *telemetryCommandsStore[SK]) DeleteCommandUsersByTenant(ctx context.Context, tenantID int64, storeOptions ...QueryOption) (result int64, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Commands", "DeleteCommandUsersByTenant", pgmesh.QueryKindWrite)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Commands", "DeleteCommandUsersByTenant", pgmesh.QueryKindWrite)
 	defer func() { storeSpan.End(err) }()
 	return q.target.DeleteCommandUsersByTenant(ctx, tenantID, storeOptions...)
 }
 
 func (q *telemetryCommandsStore[SK]) GetCommandUser(ctx context.Context, id int64, storeOptions ...QueryOption) (result *db.User, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Commands", "GetCommandUser", pgmesh.QueryKindRead)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Commands", "GetCommandUser", pgmesh.QueryKindRead)
 	defer func() { storeSpan.End(err) }()
 	return q.target.GetCommandUser(ctx, id, storeOptions...)
 }
 
 func (q *telemetryCommandsStore[SK]) ListCommandUsers(ctx context.Context, storeOptions ...QueryOption) (result []*db.User, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Commands", "ListCommandUsers", pgmesh.QueryKindRead)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Commands", "ListCommandUsers", pgmesh.QueryKindRead)
 	defer func() { storeSpan.End(err) }()
 	return q.target.ListCommandUsers(ctx, storeOptions...)
 }
 
 func (q *telemetryCommandsStore[SK]) TouchCommandUser(ctx context.Context, id int64, storeOptions ...QueryOption) (result pgconn.CommandTag, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Commands", "TouchCommandUser", pgmesh.QueryKindWrite)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Commands", "TouchCommandUser", pgmesh.QueryKindWrite)
 	defer func() { storeSpan.End(err) }()
 	return q.target.TouchCommandUser(ctx, id, storeOptions...)
 }
@@ -151,7 +151,7 @@ func (q *meshStore[SK]) Commands() Commands {
 func (q *groupedMeshStore[SK]) BatchGetCommandUser(ctx context.Context, id []int64, storeOptions ...QueryOption) *db.BatchGetCommandUserBatchResults {
 	// Resolve the shard key for this topology.
 	var shardKey SK
-	shard, _ := q.store.mesh.Shard(shardKey)
+	shard, _ := q.store.mesh.Resolve(shardKey)
 
 	// Apply options that can override the default route.
 	options := applyQueryOptions(storeOptions...)
@@ -179,7 +179,7 @@ func (q *groupedMeshStore[SK]) BatchGetCommandUser(ctx context.Context, id []int
 func (q *groupedMeshStore[SK]) BatchInsertCommandUsers(ctx context.Context, arg []*BatchInsertCommandUsersT, storeOptions ...QueryOption) *db.BatchInsertCommandUsersBatchResults {
 	// Resolve the shard key for this topology.
 	var shardKey SK
-	shard, _ := q.store.mesh.Shard(shardKey)
+	shard, _ := q.store.mesh.Resolve(shardKey)
 
 	// Apply options that can override the default route.
 	options := applyQueryOptions(storeOptions...)
@@ -199,7 +199,7 @@ func (q *groupedMeshStore[SK]) BatchInsertCommandUsers(ctx context.Context, arg 
 func (q *groupedMeshStore[SK]) BatchListCommandUsersByTenant(ctx context.Context, tenantID []int64, storeOptions ...QueryOption) *db.BatchListCommandUsersByTenantBatchResults {
 	// Resolve the shard key for this topology.
 	var shardKey SK
-	shard, _ := q.store.mesh.Shard(shardKey)
+	shard, _ := q.store.mesh.Resolve(shardKey)
 
 	// Apply options that can override the default route.
 	options := applyQueryOptions(storeOptions...)
@@ -226,12 +226,12 @@ func (q *groupedMeshStore[SK]) BatchListCommandUsersByTenant(ctx context.Context
 // CopyCommandUsers executes the generated query on its target shard.
 func (q *groupedMeshStore[SK]) CopyCommandUsers(ctx context.Context, arg []*CopyCommandUsersT, storeOptions ...QueryOption) (result int64, err error) {
 	// Trace the query and record its returned error.
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Commands", "CopyCommandUsers", pgmesh.QueryKindWrite)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Commands", "CopyCommandUsers", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()
 
 	// Resolve the shard key for this topology.
 	var shardKey SK
-	shard, err := q.store.mesh.Shard(shardKey)
+	shard, err := q.store.mesh.Resolve(shardKey)
 	if err != nil {
 		return result, err
 	}
@@ -249,15 +249,15 @@ func (q *groupedMeshStore[SK]) CopyCommandUsers(ctx context.Context, arg []*Copy
 	}
 
 	// Execute the write after recording its resolved route.
-	querySpan.SetRoute(mode)
-	ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), mode)
+	querySpan.SetRoute(mode, 1)
+	ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), mode)
 	defer func() { physicalQuerySpan.End(err) }()
 	return target.CopyCommandUsers(ctx, arg)
 }
 
 // CopyCommandUsersAsync accepts rows for asynchronous COPY.
 func (q *groupedMeshStore[SK]) CopyCommandUsersAsync(ctx context.Context, arg []*CopyCommandUsersT) *pgmesh.Future[int64] {
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Commands", "CopyCommandUsersAsync", pgmesh.QueryKindWrite)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Commands", "CopyCommandUsersAsync", pgmesh.QueryKindWrite)
 	finish := func(future *pgmesh.Future[int64]) *pgmesh.Future[int64] {
 		return pgmesh.RunFuture(func() (int64, error) {
 			count, err := future.Await(context.Background())
@@ -267,17 +267,17 @@ func (q *groupedMeshStore[SK]) CopyCommandUsersAsync(ctx context.Context, arg []
 	}
 
 	type asyncCopyShardGroup struct {
-		shard   *pgmesh.Shard[*readQueries, *queryStore]
+		shard   pgmesh.ResolvedShard[*readQueries, *queryStore]
 		args    []*db.CopyCommandUsersParams
 		batcher *pgmesh.CopyBatcher[*db.CopyCommandUsersParams]
 	}
 	var shardKey SK
-	shard, routeErr := q.store.mesh.Shard(shardKey)
+	shard, routeErr := q.store.mesh.Resolve(shardKey)
 	if routeErr != nil {
 		return finish(pgmesh.ResolvedFuture[int64](0, routeErr))
 	}
 	groups := []*asyncCopyShardGroup{{shard: shard, args: arg}}
-	querySpan.SetRoute(pgmesh.RouteModePrimary)
+	querySpan.SetRoute(pgmesh.RouteModePrimary, 1)
 	if len(groups) == 0 {
 		return finish(pgmesh.ResolvedFuture[int64](0, nil))
 	}
@@ -288,10 +288,10 @@ func (q *groupedMeshStore[SK]) CopyCommandUsersAsync(ctx context.Context, arg []
 		return finish(pgmesh.ResolvedFuture[int64](0, err))
 	}
 	for _, shardGroup := range groups {
-		shardGroup.batcher = state.batchers[shardGroup.shard.Name()]
+		shardGroup.batcher = state.batchers[shardGroup.shard.ReplicaSetName()]
 		if shardGroup.batcher == nil {
 			state.mu.Unlock()
-			err := fmt.Errorf("query CopyCommandUsersAsync has no copy batcher for replica set %q", shardGroup.shard.Name())
+			err := fmt.Errorf("query CopyCommandUsersAsync has no copy batcher for replica set %q", shardGroup.shard.ReplicaSetName())
 			return finish(pgmesh.ResolvedFuture[int64](0, err))
 		}
 	}
@@ -306,9 +306,9 @@ func (q *groupedMeshStore[SK]) CopyCommandUsersAsync(ctx context.Context, arg []
 		if state.enabled {
 			future = shardGroup.batcher.Submit(acceptedContext, shardGroup.args)
 		} else {
-			future = shardGroup.batcher.SubmitImmediate(acceptedContext, shardGroup.args)
+			future = shardGroup.batcher.SubmitUnbatched(acceptedContext, shardGroup.args)
 		}
-		asyncResults = append(asyncResults, asyncCopyResult{shardName: shardGroup.shard.Name(), future: future})
+		asyncResults = append(asyncResults, asyncCopyResult{shardName: shardGroup.shard.ReplicaSetName(), future: future})
 	}
 	state.mu.Unlock()
 
@@ -339,10 +339,10 @@ func (q *groupedMeshStore[SK]) FlushCopyCommandUsers(ctx context.Context) error 
 		shardName string
 		future    *pgmesh.Future[struct{}]
 	}
-	flushes := make([]copyFlushResult, 0, len(q.store.mesh.AllShards()))
-	for _, shard := range q.store.mesh.AllShards() {
-		if batcher := state.batchers[shard.Name()]; batcher != nil {
-			flushes = append(flushes, copyFlushResult{shardName: shard.Name(), future: batcher.FlushAsync()})
+	flushes := make([]copyFlushResult, 0, len(q.store.mesh.ReplicaSets()))
+	for _, replicaSet := range q.store.mesh.ReplicaSets() {
+		if batcher := state.batchers[replicaSet.Name()]; batcher != nil {
+			flushes = append(flushes, copyFlushResult{shardName: replicaSet.Name(), future: batcher.FlushAsync()})
 		}
 	}
 	state.mu.Unlock()
@@ -361,12 +361,12 @@ func (q *groupedMeshStore[SK]) FlushCopyCommandUsers(ctx context.Context) error 
 // DeleteCommandUser executes the generated query on its target shard.
 func (q *groupedMeshStore[SK]) DeleteCommandUser(ctx context.Context, id int64, storeOptions ...QueryOption) (err error) {
 	// Trace the query and record its returned error.
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Commands", "DeleteCommandUser", pgmesh.QueryKindWrite)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Commands", "DeleteCommandUser", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()
 
 	// Resolve the shard key for this topology.
 	var shardKey SK
-	shard, err := q.store.mesh.Shard(shardKey)
+	shard, err := q.store.mesh.Resolve(shardKey)
 	if err != nil {
 		return err
 	}
@@ -384,8 +384,8 @@ func (q *groupedMeshStore[SK]) DeleteCommandUser(ctx context.Context, id int64, 
 	}
 
 	// Execute the write after recording its resolved route.
-	querySpan.SetRoute(mode)
-	ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), mode)
+	querySpan.SetRoute(mode, 1)
+	ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), mode)
 	defer func() { physicalQuerySpan.End(err) }()
 	return target.DeleteCommandUser(ctx, id)
 }
@@ -393,12 +393,12 @@ func (q *groupedMeshStore[SK]) DeleteCommandUser(ctx context.Context, id int64, 
 // DeleteCommandUsersByTenant executes the generated query on its target shard.
 func (q *groupedMeshStore[SK]) DeleteCommandUsersByTenant(ctx context.Context, tenantID int64, storeOptions ...QueryOption) (result int64, err error) {
 	// Trace the query and record its returned error.
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Commands", "DeleteCommandUsersByTenant", pgmesh.QueryKindWrite)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Commands", "DeleteCommandUsersByTenant", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()
 
 	// Resolve the shard key for this topology.
 	var shardKey SK
-	shard, err := q.store.mesh.Shard(shardKey)
+	shard, err := q.store.mesh.Resolve(shardKey)
 	if err != nil {
 		return result, err
 	}
@@ -416,8 +416,8 @@ func (q *groupedMeshStore[SK]) DeleteCommandUsersByTenant(ctx context.Context, t
 	}
 
 	// Execute the write after recording its resolved route.
-	querySpan.SetRoute(mode)
-	ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), mode)
+	querySpan.SetRoute(mode, 1)
+	ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), mode)
 	defer func() { physicalQuerySpan.End(err) }()
 	return target.DeleteCommandUsersByTenant(ctx, tenantID)
 }
@@ -425,12 +425,12 @@ func (q *groupedMeshStore[SK]) DeleteCommandUsersByTenant(ctx context.Context, t
 // GetCommandUser executes the generated query on its target shard.
 func (q *groupedMeshStore[SK]) GetCommandUser(ctx context.Context, id int64, storeOptions ...QueryOption) (result *db.User, err error) {
 	// Trace the query and record its returned error.
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Commands", "GetCommandUser", pgmesh.QueryKindRead)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Commands", "GetCommandUser", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()
 
 	// Resolve the shard key for this topology.
 	var shardKey SK
-	shard, err := q.store.mesh.Shard(shardKey)
+	shard, err := q.store.mesh.Resolve(shardKey)
 	if err != nil {
 		return result, err
 	}
@@ -441,26 +441,26 @@ func (q *groupedMeshStore[SK]) GetCommandUser(ctx context.Context, id int64, sto
 	switch {
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
-		querySpan.SetRoute(pgmesh.RouteModeTransaction)
+		querySpan.SetRoute(pgmesh.RouteModeTransaction, 1)
 		route := shard.WriteRoute()
 		target := route.Target.WithTx(options.tx)
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
 		defer func() { physicalQuerySpan.End(err) }()
 		return target.GetCommandUser(ctx, id)
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
-		querySpan.SetRoute(pgmesh.RouteModePrimary)
+		querySpan.SetRoute(pgmesh.RouteModePrimary, 1)
 		route := shard.WriteRoute()
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
 		defer func() { physicalQuerySpan.End(err) }()
 		return route.Target.GetCommandUser(ctx, id)
 
 	// Ordinary reads use the shard's replica route.
 	default:
-		querySpan.SetRoute(pgmesh.RouteModeRead)
+		querySpan.SetRoute(pgmesh.RouteModeRead, 1)
 		route := shard.ReadRoute()
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
 		defer func() { physicalQuerySpan.End(err) }()
 		return route.Target.GetCommandUser(ctx, id)
 	}
@@ -469,12 +469,12 @@ func (q *groupedMeshStore[SK]) GetCommandUser(ctx context.Context, id int64, sto
 // ListCommandUsers executes the generated query on its target shard.
 func (q *groupedMeshStore[SK]) ListCommandUsers(ctx context.Context, storeOptions ...QueryOption) (result []*db.User, err error) {
 	// Trace the query and record its returned error.
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Commands", "ListCommandUsers", pgmesh.QueryKindRead)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Commands", "ListCommandUsers", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()
 
 	// Resolve the shard key for this topology.
 	var shardKey SK
-	shard, err := q.store.mesh.Shard(shardKey)
+	shard, err := q.store.mesh.Resolve(shardKey)
 	if err != nil {
 		return result, err
 	}
@@ -485,26 +485,26 @@ func (q *groupedMeshStore[SK]) ListCommandUsers(ctx context.Context, storeOption
 	switch {
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
-		querySpan.SetRoute(pgmesh.RouteModeTransaction)
+		querySpan.SetRoute(pgmesh.RouteModeTransaction, 1)
 		route := shard.WriteRoute()
 		target := route.Target.WithTx(options.tx)
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
 		defer func() { physicalQuerySpan.End(err) }()
 		return target.ListCommandUsers(ctx)
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
-		querySpan.SetRoute(pgmesh.RouteModePrimary)
+		querySpan.SetRoute(pgmesh.RouteModePrimary, 1)
 		route := shard.WriteRoute()
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
 		defer func() { physicalQuerySpan.End(err) }()
 		return route.Target.ListCommandUsers(ctx)
 
 	// Ordinary reads use the shard's replica route.
 	default:
-		querySpan.SetRoute(pgmesh.RouteModeRead)
+		querySpan.SetRoute(pgmesh.RouteModeRead, 1)
 		route := shard.ReadRoute()
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
 		defer func() { physicalQuerySpan.End(err) }()
 		return route.Target.ListCommandUsers(ctx)
 	}
@@ -513,12 +513,12 @@ func (q *groupedMeshStore[SK]) ListCommandUsers(ctx context.Context, storeOption
 // TouchCommandUser executes the generated query on its target shard.
 func (q *groupedMeshStore[SK]) TouchCommandUser(ctx context.Context, id int64, storeOptions ...QueryOption) (result pgconn.CommandTag, err error) {
 	// Trace the query and record its returned error.
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Commands", "TouchCommandUser", pgmesh.QueryKindWrite)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Commands", "TouchCommandUser", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()
 
 	// Resolve the shard key for this topology.
 	var shardKey SK
-	shard, err := q.store.mesh.Shard(shardKey)
+	shard, err := q.store.mesh.Resolve(shardKey)
 	if err != nil {
 		return result, err
 	}
@@ -536,8 +536,8 @@ func (q *groupedMeshStore[SK]) TouchCommandUser(ctx context.Context, id int64, s
 	}
 
 	// Execute the write after recording its resolved route.
-	querySpan.SetRoute(mode)
-	ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), mode)
+	querySpan.SetRoute(mode, 1)
+	ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), mode)
 	defer func() { physicalQuerySpan.End(err) }()
 	return target.TouchCommandUser(ctx, id)
 }

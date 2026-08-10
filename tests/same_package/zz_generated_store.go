@@ -208,17 +208,17 @@ func (q *meshStore[SK]) initializeCopyBatchers(options storeOptions) error {
 		enabled:  copyUsersBatchEnabled,
 		batchers: make(map[string]*pgmesh.CopyBatcher[*CopyUsersParams]),
 	}
-	for _, shard := range q.mesh.AllShards() {
-		route := shard.WriteRoute()
+	for _, replicaSet := range q.mesh.ReplicaSets() {
+		route := replicaSet.WriteRoute()
 		batcher, err := pgmesh.NewCopyBatcher[*CopyUsersParams](copyUsersBatchConfig, func(ctx context.Context, rows []*CopyUsersParams) (count int64, queryErr error) {
-			queryCtx, physicalQuerySpan := q.mesh.StartQuerySpan(ctx, "Users", "CopyUsers", pgmesh.QueryKindWrite, route.Metadata().WithoutVirtualShard(), pgmesh.RouteModePrimary)
+			queryCtx, physicalQuerySpan := q.mesh.StartPhysicalQuerySpan(ctx, "Users", "CopyUsers", pgmesh.QueryKindWrite, route.Metadata(), pgmesh.RouteModePrimary)
 			defer func() { physicalQuerySpan.End(queryErr) }()
 			return route.Target.CopyUsers(queryCtx, rows)
-		}, q.mesh.CopyBatchObserver("Users", "CopyUsers", route.Metadata()))
+		}, q.mesh.NewCopyBatchObserver("Users", "CopyUsers", route.Metadata()))
 		if err != nil {
 			return fmt.Errorf("configure CopyUsers copy batching: %w", err)
 		}
-		copyUsersBatch.batchers[shard.Name()] = batcher
+		copyUsersBatch.batchers[replicaSet.Name()] = batcher
 	}
 	q.copyUsersBatch = copyUsersBatch
 	return nil
@@ -278,12 +278,12 @@ func (c singletonTopology) buildStore(_ context.Context, options storeOptions) (
 		mirrors = append(mirrors, newStoreNode(database).Writer())
 	}
 	replicaSet = replicaSet.WithWriteMirrors(mirrors...)
-	mesh, err := pgmesh.NewBuilder[*readQueries, *queryStore, uint8](1).
-		WithHasher(pgmesh.ConstantShardHashFor[uint8](0)).
+	mesh, err := pgmesh.NewMeshBuilder[*readQueries, *queryStore, uint8](1).
+		WithShardHasher(pgmesh.NewConstantShardHasher[uint8](0)).
 		WithTracerProvider(options.tracerProvider).
 		WithMeterProvider(options.meterProvider).
 		WithLogger(options.logger).
-		Link(0, replicaSet).
+		MapVirtualShard(0, replicaSet).
 		Build()
 	if err != nil {
 		return nil, err

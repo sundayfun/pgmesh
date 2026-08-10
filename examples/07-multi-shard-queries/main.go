@@ -13,7 +13,7 @@ import (
 	"github.com/sundayfun/pgmesh/examples/internal/sharded"
 )
 
-const numVShards = 128
+const virtualShardCount = 128
 
 type tenantResolver struct{}
 
@@ -45,13 +45,13 @@ func run(ctx context.Context) error {
 	store, err := sharded.NewStore(
 		ctx,
 		sharded.Sharded(
-			numVShards,
-			pgmesh.ModularShardHashFor[uint64](numVShards),
+			virtualShardCount,
+			pgmesh.NewModuloShardHasher[uint64](virtualShardCount),
 			tenantResolver{},
 			sharded.WithReplicaSet("shard-0", shard0),
 			sharded.WithReplicaSet("shard-1", shard1),
-			sharded.WithVShardMapping("shard-0", pgmesh.VShardRange(0, 64)),
-			sharded.WithVShardMapping("shard-1", pgmesh.VShardRange(64, numVShards)),
+			sharded.WithVirtualShardMapping("shard-0", pgmesh.VirtualShardRange(0, 64)),
+			sharded.WithVirtualShardMapping("shard-1", pgmesh.VirtualShardRange(64, virtualShardCount)),
 		),
 	)
 	if err != nil {

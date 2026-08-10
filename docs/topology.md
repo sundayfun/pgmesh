@@ -17,12 +17,12 @@ physical shard is represented in pgmesh by a replica set.
 flowchart LR
     key["Logical shard key<br/>for example, tenant 42"]
     hash["ShardHasher"]
-    vshard["One virtual shard<br/>index 0 through 7"]
+    virtualShard["One virtual shard<br/>index 0 through 7"]
 
-    key --> hash --> vshard
+    key --> hash --> virtualShard
 
     subgraph shardA["Replica set shard-a (physical shard)"]
-        routeA["vshards 0 through 3"]
+        routeA["virtual shards 0 through 3"]
         primaryA["Primary"]
         replicasA["Read replicas"]
         routeA --> primaryA
@@ -30,15 +30,15 @@ flowchart LR
     end
 
     subgraph shardB["Replica set shard-b (physical shard)"]
-        routeB["vshards 4 through 7"]
+        routeB["virtual shards 4 through 7"]
         primaryB["Primary"]
         replicasB["Read replicas"]
         routeB --> primaryB
         routeB --> replicasB
     end
 
-    vshard -->|"mapping contains 0-3"| routeA
-    vshard -->|"mapping contains 4-7"| routeB
+    virtualShard -->|"mapping contains 0-3"| routeA
+    virtualShard -->|"mapping contains 4-7"| routeB
 ```
 
 Virtual shards are stable logical buckets, not database servers. Keeping more
@@ -53,12 +53,12 @@ private runtime mesh starts at `ShardHasher` and selects an endpoint:
 
 ```mermaid
 flowchart TD
-    call["Generated Store query"]
+    queryCall["Generated Store query"]
     resolver["Generated route calls<br/>application ShardResolver"]
     key["Logical shard key"]
     hash["ShardHasher.Hash(key)"]
-    vshard["Virtual-shard index"]
-    mapping["WithVShardMapping selects<br/>main replica set"]
+    virtualShard["Virtual-shard index"]
+    mapping["WithVirtualShardMapping selects<br/>main replica set"]
     kind{"Operation"}
     read["Next read replica<br/>round-robin; primary if none"]
     primaryRead["Main primary"]
@@ -67,7 +67,7 @@ flowchart TD
     mirrorWrites["Write to mirror primaries<br/>sequentially and synchronously"]
     result["Return"]
 
-    call --> resolver --> key --> hash --> vshard --> mapping --> kind
+    queryCall --> resolver --> key --> hash --> virtualShard --> mapping --> kind
     kind -->|"default read"| read --> result
     kind -->|"strong read"| primaryRead --> result
     kind -->|"write"| primaryWrite --> mirrors
@@ -85,10 +85,10 @@ primary write.
 | Term | Meaning |
 | --- | --- |
 | Shard key | A stable application value, such as a tenant ID, used for routing. |
-| `ShardHasher` | Maps a shard key to one virtual-shard index in `[0, numVShards)`. |
+| `ShardHasher` | Maps a shard key to one virtual-shard index in `[0, virtualShardCount)`. |
 | Virtual shard | A logical bucket in the mesh routing table. It is not a PostgreSQL endpoint. |
 | `Sharded` | Generated topology constructor that receives the virtual-shard count, hasher, resolver, and sharded options. |
-| `WithVShardMapping` | Generated functional option assigning virtual-shard indexes to a main replica set and optional write mirrors. |
+| `WithVirtualShardMapping` | Generated functional option assigning virtual-shard indexes to a main replica set and optional write mirrors. |
 | `WithReplicaSet` | Generated functional option registering one named primary and zero or more read replicas. |
 | Replica set | The internal representation of one physical shard: one primary plus its read replicas. |
 | Main replica set | The active replica set that serves reads and primary writes for a mapping. |
@@ -106,16 +106,16 @@ Two distinctions prevent most terminology mix-ups:
 ## Small configuration example
 
 ```go
-const numVShards = 8
+const virtualShardCount = 8
 
 topology := db.Sharded(
-    numVShards,
-    pgmesh.ModularShardHashFor[uint64](numVShards),
+    virtualShardCount,
+    pgmesh.NewModuloShardHasher[uint64](virtualShardCount),
     tenantResolver{},
     db.WithReplicaSet("shard-a", shardAPrimary),
     db.WithReplicaSet("shard-b", shardBPrimary),
-    db.WithVShardMapping("shard-a", pgmesh.VShardRange(0, 4)),
-    db.WithVShardMapping("shard-b", pgmesh.VShardRange(4, 8)),
+    db.WithVirtualShardMapping("shard-a", pgmesh.VirtualShardRange(0, 4)),
+    db.WithVirtualShardMapping("shard-b", pgmesh.VirtualShardRange(4, 8)),
 )
 ```
 
@@ -135,7 +135,7 @@ the private runtime objects used on every request:
 2. Build internal read-only and primary-capable executors for every database.
 3. Build each replica set and attach mirror writers to main replica
    sets.
-4. Link every virtual-shard index to its configured main replica set.
+4. Map every virtual-shard index to its configured main replica set.
 5. Return the common generated `Store`, or the first topology error.
 
 Continue with [Add sharding](how-to/add-sharding.md) for a complete setup or

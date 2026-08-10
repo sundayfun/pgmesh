@@ -115,7 +115,7 @@ idempotent or operationally recoverable workflows.
 
 One generated call records one `pgmesh.query.logical.duration` point with
 `pgmesh.route.scope="fanout"`. Every physical shard execution records its own
-`pgmesh.query.physical.duration` point with `pgmesh.shard.name` and
+`pgmesh.query.physical.duration` point with `pgmesh.replica_set.name` and
 `pgmesh.node.name`. The physical-to-logical throughput ratio therefore exposes
 fan-out amplification directly.
 

@@ -288,7 +288,7 @@ func writeStoreTelemetryWrapper(out *bytes.Buffer, opts *options, group *storeGr
 		if traced {
 			fmt.Fprintf(
 				out,
-				"\tctx, storeSpan := %s.store.mesh.StartStoreSpan(ctx, %q, %q, %s)\n",
+				"\tctx, storeSpan := %s.store.mesh.StartStoreQuerySpan(ctx, %q, %q, %s)\n",
 				defaultReceiverName,
 				query.store,
 				query.methodName,
@@ -327,7 +327,7 @@ func writeCopyTelemetryMethods(
 	)
 	fmt.Fprintf(
 		out,
-		"\tctx, storeSpan := %s.store.mesh.StartStoreSpan(ctx, %q, %q, %s)\n",
+		"\tctx, storeSpan := %s.store.mesh.StartStoreQuerySpan(ctx, %q, %q, %s)\n",
 		defaultReceiverName,
 		query.store,
 		async,
@@ -763,8 +763,8 @@ func writeCopyBatchInitialization(out *bytes.Buffer, copies []generatedQuery) {
 			copyRowType(query),
 		)
 		out.WriteString("\t}\n")
-		fmt.Fprintf(out, "\tfor _, shard := range %s.mesh.AllShards() {\n", defaultReceiverName)
-		out.WriteString("\t\troute := shard.WriteRoute()\n")
+		fmt.Fprintf(out, "\tfor _, replicaSet := range %s.mesh.ReplicaSets() {\n", defaultReceiverName)
+		out.WriteString("\t\troute := replicaSet.WriteRoute()\n")
 		fmt.Fprintf(
 			out,
 			"\t\tbatcher, err := pgmesh.NewCopyBatcher[%s](%s, func(ctx context.Context, rows %s) (count int64, queryErr error) {\n",
@@ -774,7 +774,7 @@ func writeCopyBatchInitialization(out *bytes.Buffer, copies []generatedQuery) {
 		)
 		fmt.Fprintf(
 			out,
-			"\t\t\tqueryCtx, physicalQuerySpan := %s.mesh.StartQuerySpan(ctx, %q, %q, pgmesh.QueryKindWrite, route.Metadata().WithoutVirtualShard(), pgmesh.RouteModePrimary)\n",
+			"\t\t\tqueryCtx, physicalQuerySpan := %s.mesh.StartPhysicalQuerySpan(ctx, %q, %q, pgmesh.QueryKindWrite, route.Metadata(), pgmesh.RouteModePrimary)\n",
 			defaultReceiverName,
 			query.store,
 			query.methodName,
@@ -783,7 +783,7 @@ func writeCopyBatchInitialization(out *bytes.Buffer, copies []generatedQuery) {
 		fmt.Fprintf(out, "\t\t\treturn route.Target.%s(queryCtx, rows)\n", query.methodName)
 		fmt.Fprintf(
 			out,
-			"\t\t}, %s.mesh.CopyBatchObserver(%q, %q, route.Metadata()))\n",
+			"\t\t}, %s.mesh.NewCopyBatchObserver(%q, %q, route.Metadata()))\n",
 			defaultReceiverName,
 			query.store,
 			query.methodName,
@@ -795,7 +795,7 @@ func writeCopyBatchInitialization(out *bytes.Buffer, copies []generatedQuery) {
 			"configure "+query.methodName+" copy batching: %w",
 		)
 		out.WriteString("\t\t}\n")
-		fmt.Fprintf(out, "\t\t%s.batchers[shard.Name()] = batcher\n", stateName)
+		fmt.Fprintf(out, "\t\t%s.batchers[replicaSet.Name()] = batcher\n", stateName)
 		out.WriteString("\t}\n")
 		fmt.Fprintf(out, "\t%s.%s = %s\n", defaultReceiverName, stateName, stateName)
 	}
@@ -909,7 +909,11 @@ func writeStoreConfiguration(
 	out.WriteString("\treturn singletonTopology{config: config}\n")
 	out.WriteString("}\n\n")
 
-	fmt.Fprintf(out, "// %s creates the generated query API from an opaque topology configuration.\n", opts.ConstructorName)
+	fmt.Fprintf(
+		out,
+		"// %s creates the generated query API from an opaque topology configuration.\n",
+		opts.ConstructorName,
+	)
 	fmt.Fprintf(
 		out,
 		"func %s(ctx context.Context, topology Topology, options ...StoreOption) (%s, error) {\n",
@@ -1002,7 +1006,12 @@ func writeStoreConfiguration(
 	out.WriteString("\t\tif database == nil { return nil, fmt.Errorf(\"pgmesh: database mirror %d is nil\", index) }\n")
 	out.WriteString("\t}\n")
 	fmt.Fprintf(out, "\tprimary := %s(config.primary)\n", defaultNodeNew)
-	fmt.Fprintf(out, "\treplicas := make([]pgmesh.Node[*%s, *%s], 0, len(config.replicas))\n", defaultReadType, defaultStoreType)
+	fmt.Fprintf(
+		out,
+		"\treplicas := make([]pgmesh.Node[*%s, *%s], 0, len(config.replicas))\n",
+		defaultReadType,
+		defaultStoreType,
+	)
 	out.WriteString("\tfor _, database := range config.replicas {\n")
 	fmt.Fprintf(out, "\t\treplicas = append(replicas, %s(database))\n", defaultNodeNew)
 	out.WriteString("\t}\n")
@@ -1012,12 +1021,12 @@ func writeStoreConfiguration(
 	fmt.Fprintf(out, "\t\tmirrors = append(mirrors, %s(database).Writer())\n", defaultNodeNew)
 	out.WriteString("\t}\n")
 	out.WriteString("\treplicaSet = replicaSet.WithWriteMirrors(mirrors...)\n")
-	fmt.Fprintf(out, "\tmesh, err := pgmesh.NewBuilder[*%s, *%s, uint8](1).\n", defaultReadType, defaultStoreType)
-	out.WriteString("\t\tWithHasher(pgmesh.ConstantShardHashFor[uint8](0)).\n")
+	fmt.Fprintf(out, "\tmesh, err := pgmesh.NewMeshBuilder[*%s, *%s, uint8](1).\n", defaultReadType, defaultStoreType)
+	out.WriteString("\t\tWithShardHasher(pgmesh.NewConstantShardHasher[uint8](0)).\n")
 	out.WriteString("\t\tWithTracerProvider(options.tracerProvider).\n")
 	out.WriteString("\t\tWithMeterProvider(options.meterProvider).\n")
 	out.WriteString("\t\tWithLogger(options.logger).\n")
-	out.WriteString("\t\tLink(0, replicaSet).\n")
+	out.WriteString("\t\tMapVirtualShard(0, replicaSet).\n")
 	out.WriteString("\t\tBuild()\n")
 	out.WriteString("\tif err != nil { return nil, err }\n")
 	if len(groups) > 0 {
@@ -1094,12 +1103,12 @@ func writeMeshStoreQueryMethod(out *bytes.Buffer, opts *options, query *generate
 		out.WriteString("\t}\n")
 	}
 	if traced {
-		fmt.Fprintf(out, "\tshard, %s := %s.mesh.Shard(shardKey)\n", errName, store)
+		fmt.Fprintf(out, "\tshard, %s := %s.mesh.Resolve(shardKey)\n", errName, store)
 		fmt.Fprintf(out, "\tif %s != nil {\n", errName)
 		fmt.Fprintf(out, "\t\treturn %s\n", strings.Join(resultNames, ", "))
 		out.WriteString("\t}\n")
 	} else {
-		fmt.Fprintf(out, "\tshard, _ := %s.mesh.Shard(shardKey)\n", store)
+		fmt.Fprintf(out, "\tshard, _ := %s.mesh.Resolve(shardKey)\n", store)
 	}
 
 	out.WriteString("\n\t// Apply options that can override the default route.\n")
@@ -1110,12 +1119,14 @@ func writeMeshStoreQueryMethod(out *bytes.Buffer, opts *options, query *generate
 		out.WriteString("\t// Transactional reads must use their transaction.\n")
 		out.WriteString("\tcase options.tx != nil:\n")
 		if traced {
-			out.WriteString("\t\tquerySpan.SetRoute(pgmesh.RouteModeTransaction)\n")
+			out.WriteString("\t\tquerySpan.SetRoute(pgmesh.RouteModeTransaction, 1)\n")
 		}
 		out.WriteString("\t\troute := shard.WriteRoute()\n")
 		out.WriteString("\t\ttarget := route.Target.WithTx(options.tx)\n")
 		if traced {
-			out.WriteString("\t\tctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)\n")
+			out.WriteString(
+				"\t\tctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)\n",
+			)
 			fmt.Fprintf(out, "\t\tdefer func() { physicalQuerySpan.End(%s) }()\n", errName)
 		}
 		fmt.Fprintf(
@@ -1128,11 +1139,13 @@ func writeMeshStoreQueryMethod(out *bytes.Buffer, opts *options, query *generate
 		out.WriteString("\n\t// Explicit primary reads bypass replicas.\n")
 		out.WriteString("\tcase options.primary:\n")
 		if traced {
-			out.WriteString("\t\tquerySpan.SetRoute(pgmesh.RouteModePrimary)\n")
+			out.WriteString("\t\tquerySpan.SetRoute(pgmesh.RouteModePrimary, 1)\n")
 		}
 		out.WriteString("\t\troute := shard.WriteRoute()\n")
 		if traced {
-			out.WriteString("\t\tctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)\n")
+			out.WriteString(
+				"\t\tctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)\n",
+			)
 			fmt.Fprintf(out, "\t\tdefer func() { physicalQuerySpan.End(%s) }()\n", errName)
 		}
 		fmt.Fprintf(out, "\t\treturn route.Target.%s(%s)\n", query.methodName, args)
@@ -1140,11 +1153,13 @@ func writeMeshStoreQueryMethod(out *bytes.Buffer, opts *options, query *generate
 		out.WriteString("\n\t// Ordinary reads use the shard's replica route.\n")
 		out.WriteString("\tdefault:\n")
 		if traced {
-			out.WriteString("\t\tquerySpan.SetRoute(pgmesh.RouteModeRead)\n")
+			out.WriteString("\t\tquerySpan.SetRoute(pgmesh.RouteModeRead, 1)\n")
 		}
 		out.WriteString("\t\troute := shard.ReadRoute()\n")
 		if traced {
-			out.WriteString("\t\tctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)\n")
+			out.WriteString(
+				"\t\tctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)\n",
+			)
 			fmt.Fprintf(out, "\t\tdefer func() { physicalQuerySpan.End(%s) }()\n", errName)
 		}
 		fmt.Fprintf(out, "\t\treturn route.Target.%s(%s)\n", query.methodName, args)
@@ -1165,8 +1180,10 @@ func writeMeshStoreQueryMethod(out *bytes.Buffer, opts *options, query *generate
 
 		if traced {
 			out.WriteString("\n\t// Execute the write after recording its resolved route.\n")
-			out.WriteString("\tquerySpan.SetRoute(mode)\n")
-			out.WriteString("\tctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), mode)\n")
+			out.WriteString("\tquerySpan.SetRoute(mode, 1)\n")
+			out.WriteString(
+				"\tctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), mode)\n",
+			)
 			fmt.Fprintf(out, "\tdefer func() { physicalQuerySpan.End(%s) }()\n", errName)
 		} else {
 			out.WriteString("\n\t// Execute the write on the selected target.\n")
@@ -1184,7 +1201,7 @@ func writeInternalQuerySpanStart(
 ) {
 	fmt.Fprintf(
 		out,
-		"\tctx, querySpan := %s.mesh.StartSpan(ctx, %q, %q, %s)\n",
+		"\tctx, querySpan := %s.mesh.StartLogicalQuerySpan(ctx, %q, %q, %s)\n",
 		store,
 		query.store,
 		query.methodName,
@@ -1232,7 +1249,7 @@ func writeGroupedManyQueryMethod(
 	out.WriteString("\ttype manyShardGroup struct {\n")
 	fmt.Fprintf(
 		out,
-		"\t\tshard *pgmesh.Shard[*%s, *%s]\n",
+		"\t\tshard pgmesh.ResolvedShard[*%s, *%s]\n",
 		defaultReadType,
 		defaultStoreType,
 	)
@@ -1280,7 +1297,7 @@ func writeGroupedManyQueryMethod(
 		query.route.methodName,
 	)
 	out.WriteString("\t\t}\n")
-	fmt.Fprintf(out, "\t\tshard, routeErr := %s.mesh.Shard(shardKey)\n", store)
+	fmt.Fprintf(out, "\t\tshard, routeErr := %s.mesh.Resolve(shardKey)\n", store)
 	out.WriteString("\t\tif routeErr != nil {\n")
 	fmt.Fprintf(
 		out,
@@ -1290,29 +1307,31 @@ func writeGroupedManyQueryMethod(
 	)
 	fmt.Fprintf(out, "\t\t\treturn %s\n", strings.Join(resultNames, ", "))
 	out.WriteString("\t\t}\n")
-	out.WriteString("\t\tshardGroup := groupsByName[shard.Name()]\n")
+	out.WriteString("\t\tshardGroup := groupsByName[shard.ReplicaSetName()]\n")
 	out.WriteString("\t\tif shardGroup == nil {\n")
 	fmt.Fprintf(
 		out,
 		"\t\t\tshardGroup = &manyShardGroup{shard: shard, args: make([]%s, 0), requested: make(map[any]struct{})}\n",
 		spec.elementType,
 	)
-	out.WriteString("\t\t\tgroupsByName[shard.Name()] = shardGroup\n")
+	out.WriteString("\t\t\tgroupsByName[shard.ReplicaSetName()] = shardGroup\n")
 	out.WriteString("\t\t}\n")
 	out.WriteString("\t\tif _, exists := shardGroup.requested[lookupKey]; exists { continue }\n")
 	out.WriteString("\t\tshardGroup.requested[lookupKey] = struct{}{}\n")
 	out.WriteString("\t\tshardGroup.args = append(shardGroup.args, lookupValue)\n")
-	out.WriteString("\t\torderedItems = append(orderedItems, manyOrderItem{shardName: shard.Name(), key: lookupKey})\n")
+	out.WriteString(
+		"\t\torderedItems = append(orderedItems, manyOrderItem{shardName: shard.ReplicaSetName(), key: lookupKey})\n",
+	)
 	out.WriteString("\t}\n\n")
 
 	out.WriteString("\tgroups := make([]*manyShardGroup, 0, len(groupsByName))\n")
-	fmt.Fprintf(out, "\tfor _, shard := range %s.mesh.AllShards() {\n", store)
-	out.WriteString("\t\tif shardGroup := groupsByName[shard.Name()]; shardGroup != nil {\n")
+	fmt.Fprintf(out, "\tfor _, replicaSet := range %s.mesh.ReplicaSets() {\n", store)
+	out.WriteString("\t\tif shardGroup := groupsByName[replicaSet.Name()]; shardGroup != nil {\n")
 	out.WriteString("\t\t\tgroups = append(groups, shardGroup)\n")
 	out.WriteString("\t\t}\n")
 	out.WriteString("\t}\n")
 	out.WriteString("\tif options.tx != nil && len(groups) > 1 {\n")
-	out.WriteString("\t\tquerySpan.SetMultiRoute(pgmesh.RouteModeTransaction, len(groups))\n")
+	out.WriteString("\t\tquerySpan.SetRoute(pgmesh.RouteModeTransaction, len(groups))\n")
 	fmt.Fprintf(out, "\t\t%s = pgmesh.ErrCrossShardTransaction\n", errName)
 	fmt.Fprintf(out, "\t\treturn %s\n", strings.Join(resultNames, ", "))
 	out.WriteString("\t}\n\n")
@@ -1324,7 +1343,7 @@ func writeGroupedManyQueryMethod(
 		out.WriteString("\tmode := pgmesh.RouteModePrimary\n")
 	}
 	out.WriteString("\tif options.tx != nil { mode = pgmesh.RouteModeTransaction }\n")
-	out.WriteString("\tquerySpan.SetMultiRoute(mode, len(groups))\n")
+	out.WriteString("\tquerySpan.SetRoute(mode, len(groups))\n")
 	fmt.Fprintf(out, "\tif len(groups) == 0 { return %s }\n\n", strings.Join(resultNames, ", "))
 
 	fmt.Fprintf(out, "\ttype manyResult struct {\n\t\tvalue %s\n\t\terr error\n\t}\n", query.results[0])
@@ -1339,7 +1358,7 @@ func writeGroupedManyQueryMethod(
 		out.WriteString("\t\t\t\troute := shardGroup.shard.WriteRoute()\n")
 		out.WriteString("\t\t\t\ttarget := route.Target.WithTx(options.tx)\n")
 		out.WriteString(
-			"\t\t\t\tqueryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)\n",
+			"\t\t\t\tqueryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)\n",
 		)
 		fmt.Fprintf(
 			out,
@@ -1351,7 +1370,7 @@ func writeGroupedManyQueryMethod(
 		out.WriteString("\t\t\tcase options.primary:\n")
 		out.WriteString("\t\t\t\troute := shardGroup.shard.WriteRoute()\n")
 		out.WriteString(
-			"\t\t\t\tqueryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)\n",
+			"\t\t\t\tqueryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)\n",
 		)
 		fmt.Fprintf(
 			out,
@@ -1363,7 +1382,7 @@ func writeGroupedManyQueryMethod(
 		out.WriteString("\t\t\tdefault:\n")
 		out.WriteString("\t\t\t\troute := shardGroup.shard.ReadRoute()\n")
 		out.WriteString(
-			"\t\t\t\tqueryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)\n",
+			"\t\t\t\tqueryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)\n",
 		)
 		fmt.Fprintf(
 			out,
@@ -1378,7 +1397,7 @@ func writeGroupedManyQueryMethod(
 		out.WriteString("\t\t\ttarget := route.Target\n")
 		out.WriteString("\t\t\tif options.tx != nil { target = target.WithTx(options.tx) }\n")
 		out.WriteString(
-			"\t\t\tqueryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)\n",
+			"\t\t\tqueryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)\n",
 		)
 		fmt.Fprintf(
 			out,
@@ -1397,7 +1416,7 @@ func writeGroupedManyQueryMethod(
 	out.WriteString("\t\tif groupResult.err != nil {\n")
 	fmt.Fprintf(
 		out,
-		"\t\t\tgroupErrors = append(groupErrors, fmt.Errorf(%q, groups[index].shard.Name(), groupResult.err))\n",
+		"\t\t\tgroupErrors = append(groupErrors, fmt.Errorf(%q, groups[index].shard.ReplicaSetName(), groupResult.err))\n",
 		"query "+query.methodName+" on replica set %q: %w",
 	)
 	out.WriteString("\t\t}\n")
@@ -1412,13 +1431,13 @@ func writeGroupedManyQueryMethod(
 	}
 	out.WriteString("\tfor groupIndex, groupResult := range groupResults {\n")
 	fmt.Fprintf(out, "\t\trowsByKey := make(map[any][]%s)\n", rowType)
-	out.WriteString("\t\trowsByGroup[groups[groupIndex].shard.Name()] = rowsByKey\n")
+	out.WriteString("\t\trowsByGroup[groups[groupIndex].shard.ReplicaSetName()] = rowsByKey\n")
 	out.WriteString("\t\tfor resultIndex, row := range groupResult.value {\n")
 	if spec.resultIsStruct && query.ret.emitPointer {
 		out.WriteString("\t\t\tif row == nil {\n")
 		fmt.Fprintf(
 			out,
-			"\t\t\t\tgroupErrors = append(groupErrors, fmt.Errorf(%q, groups[groupIndex].shard.Name(), resultIndex))\n",
+			"\t\t\t\tgroupErrors = append(groupErrors, fmt.Errorf(%q, groups[groupIndex].shard.ReplicaSetName(), resultIndex))\n",
 			"query "+query.methodName+" on replica set %q returned nil row at result %d",
 		)
 		out.WriteString("\t\t\t\tcontinue\n")
@@ -1450,7 +1469,7 @@ func writeGroupedManyQueryMethod(
 	out.WriteString("\t\t\tif resultKey != nil && !reflect.ValueOf(resultKey).Comparable() {\n")
 	fmt.Fprintf(
 		out,
-		"\t\t\t\tgroupErrors = append(groupErrors, fmt.Errorf(%q, groups[groupIndex].shard.Name(), resultIndex, resultKey))\n",
+		"\t\t\t\tgroupErrors = append(groupErrors, fmt.Errorf(%q, groups[groupIndex].shard.ReplicaSetName(), resultIndex, resultKey))\n",
 		"query "+query.methodName+" on replica set %q result %d has non-comparable lookup key type %T",
 	)
 	out.WriteString("\t\t\t\tcontinue\n")
@@ -1458,7 +1477,7 @@ func writeGroupedManyQueryMethod(
 	out.WriteString("\t\t\tif _, requested := groups[groupIndex].requested[resultKey]; !requested {\n")
 	fmt.Fprintf(
 		out,
-		"\t\t\t\tgroupErrors = append(groupErrors, fmt.Errorf(%q, groups[groupIndex].shard.Name(), resultIndex))\n",
+		"\t\t\t\tgroupErrors = append(groupErrors, fmt.Errorf(%q, groups[groupIndex].shard.ReplicaSetName(), resultIndex))\n",
 		"query "+query.methodName+" on replica set %q result %d has an unrequested lookup key",
 	)
 	out.WriteString("\t\t\t\tcontinue\n")
@@ -1527,9 +1546,9 @@ func writeAllShardsQueryMethod(out *bytes.Buffer, query *generatedQuery) {
 	writeInternalQuerySpanStart(out, store, query, errName)
 	out.WriteString("\n")
 	out.WriteString("\toptions := applyQueryOptions(storeOptions...)\n")
-	fmt.Fprintf(out, "\tshards := %s.mesh.AllShards()\n", store)
+	fmt.Fprintf(out, "\treplicaSets := %s.mesh.ReplicaSets()\n", store)
 	out.WriteString("\tif options.tx != nil {\n")
-	out.WriteString("\t\tquerySpan.SetMultiRoute(pgmesh.RouteModeTransaction, len(shards))\n")
+	out.WriteString("\t\tquerySpan.SetRoute(pgmesh.RouteModeTransaction, len(replicaSets))\n")
 	fmt.Fprintf(out, "\t\t%s = pgmesh.ErrCrossShardTransaction\n", errName)
 	fmt.Fprintf(out, "\t\treturn %s\n", strings.Join(resultNames, ", "))
 	out.WriteString("\t}\n\n")
@@ -1540,7 +1559,7 @@ func writeAllShardsQueryMethod(out *bytes.Buffer, query *generatedQuery) {
 	} else {
 		out.WriteString("\tmode := pgmesh.RouteModePrimary\n")
 	}
-	out.WriteString("\tquerySpan.SetMultiRoute(mode, len(shards))\n\n")
+	out.WriteString("\tquerySpan.SetRoute(mode, len(replicaSets))\n\n")
 
 	valueType := ""
 	if len(query.results) > 1 {
@@ -1552,14 +1571,14 @@ func writeAllShardsQueryMethod(out *bytes.Buffer, query *generatedQuery) {
 	}
 	out.WriteString("\t\terr error\n")
 	out.WriteString("\t}\n")
-	out.WriteString("\tshardResults := make([]shardResult, len(shards))\n")
+	out.WriteString("\tshardResults := make([]shardResult, len(replicaSets))\n")
 	out.WriteString("\tvar group sync.WaitGroup\n")
-	out.WriteString("\tfor index, shard := range shards {\n")
+	out.WriteString("\tfor index, replicaSet := range replicaSets {\n")
 	out.WriteString("\t\tgroup.Go(func() {\n")
 	args := strings.Join(query.callArgs, ", ")
 	call := func(target string) {
 		out.WriteString(
-			"\t\t\tqueryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)\n",
+			"\t\t\tqueryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), mode)\n",
 		)
 		if valueType == "" {
 			fmt.Fprintf(
@@ -1583,9 +1602,9 @@ func writeAllShardsQueryMethod(out *bytes.Buffer, query *generatedQuery) {
 	}
 	if query.kind == queryKindRead {
 		out.WriteString("\t\t\tif options.primary {\n")
-		out.WriteString("\t\t\t\troute := shard.WriteRoute()\n")
+		out.WriteString("\t\t\t\troute := replicaSet.WriteRoute()\n")
 		out.WriteString(
-			"\t\t\t\tqueryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)\n",
+			"\t\t\t\tqueryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), mode)\n",
 		)
 		if valueType == "" {
 			fmt.Fprintf(
@@ -1605,22 +1624,22 @@ func writeAllShardsQueryMethod(out *bytes.Buffer, query *generatedQuery) {
 		out.WriteString("\t\t\t\tphysicalQuerySpan.End(shardResults[index].err)\n")
 		out.WriteString("\t\t\t\treturn\n")
 		out.WriteString("\t\t\t}\n")
-		out.WriteString("\t\t\troute := shard.ReadRoute()\n")
+		out.WriteString("\t\t\troute := replicaSet.ReadRoute()\n")
 		call("route.Target")
 	} else {
-		out.WriteString("\t\t\troute := shard.WriteRoute()\n")
+		out.WriteString("\t\t\troute := replicaSet.WriteRoute()\n")
 		call("route.Target")
 	}
 	out.WriteString("\t\t})\n")
 	out.WriteString("\t}\n")
 	out.WriteString("\tgroup.Wait()\n\n")
 
-	out.WriteString("\tshardErrors := make([]error, 0, len(shards))\n")
+	out.WriteString("\tshardErrors := make([]error, 0, len(replicaSets))\n")
 	out.WriteString("\tfor index, shardResult := range shardResults {\n")
 	out.WriteString("\t\tif shardResult.err != nil {\n")
 	fmt.Fprintf(
 		out,
-		"\t\t\tshardErrors = append(shardErrors, fmt.Errorf(%q, shards[index].Name(), shardResult.err))\n",
+		"\t\t\tshardErrors = append(shardErrors, fmt.Errorf(%q, replicaSets[index].Name(), shardResult.err))\n",
 		"query "+query.methodName+" on replica set %q: %w",
 	)
 	out.WriteString("\t\t}\n")
@@ -1669,7 +1688,7 @@ func writeGroupedCopyQueryMethod(out *bytes.Buffer, query *generatedQuery) {
 	out.WriteString("\ttype copyShardGroup struct {\n")
 	fmt.Fprintf(
 		out,
-		"\t\tshard *pgmesh.Shard[*%s, *%s]\n",
+		"\t\tshard pgmesh.ResolvedShard[*%s, *%s]\n",
 		defaultReadType,
 		defaultStoreType,
 	)
@@ -1688,7 +1707,7 @@ func writeGroupedCopyQueryMethod(out *bytes.Buffer, query *generatedQuery) {
 		query.route.methodName,
 	)
 	out.WriteString("\t\t}\n")
-	fmt.Fprintf(out, "\t\tshard, routeErr := %s.mesh.Shard(shardKey)\n", store)
+	fmt.Fprintf(out, "\t\tshard, routeErr := %s.mesh.Resolve(shardKey)\n", store)
 	out.WriteString("\t\tif routeErr != nil {\n")
 	fmt.Fprintf(
 		out,
@@ -1698,14 +1717,14 @@ func writeGroupedCopyQueryMethod(out *bytes.Buffer, query *generatedQuery) {
 	)
 	fmt.Fprintf(out, "\t\t\treturn %s\n", strings.Join(resultNames, ", "))
 	out.WriteString("\t\t}\n")
-	out.WriteString("\t\tshardGroup := groupsByName[shard.Name()]\n")
+	out.WriteString("\t\tshardGroup := groupsByName[shard.ReplicaSetName()]\n")
 	out.WriteString("\t\tif shardGroup == nil {\n")
 	fmt.Fprintf(
 		out,
 		"\t\t\tshardGroup = &copyShardGroup{shard: shard, args: make(%s, 0)}\n",
 		query.params[1].typ,
 	)
-	out.WriteString("\t\t\tgroupsByName[shard.Name()] = shardGroup\n")
+	out.WriteString("\t\t\tgroupsByName[shard.ReplicaSetName()] = shardGroup\n")
 	out.WriteString("\t\t}\n")
 	switch {
 	case query.shardArgs == nil:
@@ -1719,13 +1738,13 @@ func writeGroupedCopyQueryMethod(out *bytes.Buffer, query *generatedQuery) {
 	out.WriteString("\t}\n\n")
 
 	out.WriteString("\tgroups := make([]*copyShardGroup, 0, len(groupsByName))\n")
-	fmt.Fprintf(out, "\tfor _, shard := range %s.mesh.AllShards() {\n", store)
-	out.WriteString("\t\tif shardGroup := groupsByName[shard.Name()]; shardGroup != nil {\n")
+	fmt.Fprintf(out, "\tfor _, replicaSet := range %s.mesh.ReplicaSets() {\n", store)
+	out.WriteString("\t\tif shardGroup := groupsByName[replicaSet.Name()]; shardGroup != nil {\n")
 	out.WriteString("\t\t\tgroups = append(groups, shardGroup)\n")
 	out.WriteString("\t\t}\n")
 	out.WriteString("\t}\n")
 	out.WriteString("\tif options.tx != nil && len(groups) > 1 {\n")
-	out.WriteString("\t\tquerySpan.SetMultiRoute(pgmesh.RouteModeTransaction, len(groups))\n")
+	out.WriteString("\t\tquerySpan.SetRoute(pgmesh.RouteModeTransaction, len(groups))\n")
 	fmt.Fprintf(out, "\t\t%s = pgmesh.ErrCrossShardTransaction\n", errName)
 	fmt.Fprintf(out, "\t\treturn %s\n", strings.Join(resultNames, ", "))
 	out.WriteString("\t}\n\n")
@@ -1734,7 +1753,7 @@ func writeGroupedCopyQueryMethod(out *bytes.Buffer, query *generatedQuery) {
 	out.WriteString("\tif options.tx != nil {\n")
 	out.WriteString("\t\tmode = pgmesh.RouteModeTransaction\n")
 	out.WriteString("\t}\n")
-	out.WriteString("\tquerySpan.SetMultiRoute(mode, len(groups))\n")
+	out.WriteString("\tquerySpan.SetRoute(mode, len(groups))\n")
 	out.WriteString("\tif len(groups) == 0 { return ")
 	out.WriteString(strings.Join(resultNames, ", "))
 	out.WriteString(" }\n\n")
@@ -1750,7 +1769,9 @@ func writeGroupedCopyQueryMethod(out *bytes.Buffer, query *generatedQuery) {
 	out.WriteString("\t\t\troute := shardGroup.shard.WriteRoute()\n")
 	out.WriteString("\t\t\ttarget := route.Target\n")
 	out.WriteString("\t\t\tif options.tx != nil { target = target.WithTx(options.tx) }\n")
-	out.WriteString("\t\t\tqueryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)\n")
+	out.WriteString(
+		"\t\t\tqueryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)\n",
+	)
 	fmt.Fprintf(
 		out,
 		"\t\t\tcopyResults[index].count, copyResults[index].err = target.%s(queryCtx, shardGroup.args)\n",
@@ -1765,7 +1786,7 @@ func writeGroupedCopyQueryMethod(out *bytes.Buffer, query *generatedQuery) {
 	out.WriteString("\t\tif copyResult.err != nil {\n")
 	fmt.Fprintf(
 		out,
-		"\t\t\tcopyErrors = append(copyErrors, fmt.Errorf(%q, groups[index].shard.Name(), copyResult.err))\n",
+		"\t\t\tcopyErrors = append(copyErrors, fmt.Errorf(%q, groups[index].shard.ReplicaSetName(), copyResult.err))\n",
 		"query "+query.methodName+" on replica set %q: %w",
 	)
 	out.WriteString("\t\t}\n")
@@ -1803,7 +1824,7 @@ func writeAsyncCopyMethod(out *bytes.Buffer, query *generatedQuery) {
 	)
 	fmt.Fprintf(
 		out,
-		"\tctx, querySpan := %s.store.mesh.StartSpan(ctx, %q, %q, %s)\n",
+		"\tctx, querySpan := %s.store.mesh.StartLogicalQuerySpan(ctx, %q, %q, %s)\n",
 		defaultReceiverName,
 		query.store,
 		async,
@@ -1820,7 +1841,7 @@ func writeAsyncCopyMethod(out *bytes.Buffer, query *generatedQuery) {
 	out.WriteString("\ttype asyncCopyShardGroup struct {\n")
 	fmt.Fprintf(
 		out,
-		"\t\tshard *pgmesh.Shard[*%s, *%s]\n",
+		"\t\tshard pgmesh.ResolvedShard[*%s, *%s]\n",
 		defaultReadType,
 		defaultStoreType,
 	)
@@ -1843,7 +1864,7 @@ func writeAsyncCopyMethod(out *bytes.Buffer, query *generatedQuery) {
 			query.route.methodName,
 		)
 		out.WriteString("\t\t}\n")
-		fmt.Fprintf(out, "\t\tshard, routeErr := %s.store.mesh.Shard(shardKey)\n", defaultReceiverName)
+		fmt.Fprintf(out, "\t\tshard, routeErr := %s.store.mesh.Resolve(shardKey)\n", defaultReceiverName)
 		out.WriteString("\t\tif routeErr != nil {\n")
 		fmt.Fprintf(
 			out,
@@ -1852,27 +1873,27 @@ func writeAsyncCopyMethod(out *bytes.Buffer, query *generatedQuery) {
 		)
 		out.WriteString("\t\t\treturn finish(pgmesh.ResolvedFuture[int64](0, err))\n")
 		out.WriteString("\t\t}\n")
-		out.WriteString("\t\tshardGroup := groupsByName[shard.Name()]\n")
+		out.WriteString("\t\tshardGroup := groupsByName[shard.ReplicaSetName()]\n")
 		out.WriteString("\t\tif shardGroup == nil {\n")
 		fmt.Fprintf(
 			out,
 			"\t\t\tshardGroup = &asyncCopyShardGroup{shard: shard, args: make(%s, 0)}\n",
 			query.params[1].typ,
 		)
-		out.WriteString("\t\t\tgroupsByName[shard.Name()] = shardGroup\n")
+		out.WriteString("\t\t\tgroupsByName[shard.ReplicaSetName()] = shardGroup\n")
 		out.WriteString("\t\t}\n")
 		writeCopyGroupAppend(out, query, "shardGroup.args", "item", "\t\t")
 		out.WriteString("\t}\n")
 		out.WriteString("\tgroups := make([]*asyncCopyShardGroup, 0, len(groupsByName))\n")
-		fmt.Fprintf(out, "\tfor _, shard := range %s.store.mesh.AllShards() {\n", defaultReceiverName)
-		out.WriteString("\t\tif shardGroup := groupsByName[shard.Name()]; shardGroup != nil {\n")
+		fmt.Fprintf(out, "\tfor _, replicaSet := range %s.store.mesh.ReplicaSets() {\n", defaultReceiverName)
+		out.WriteString("\t\tif shardGroup := groupsByName[replicaSet.Name()]; shardGroup != nil {\n")
 		out.WriteString("\t\t\tgroups = append(groups, shardGroup)\n")
 		out.WriteString("\t\t}\n")
 		out.WriteString("\t}\n")
-		out.WriteString("\tquerySpan.SetMultiRoute(pgmesh.RouteModePrimary, len(groups))\n")
+		out.WriteString("\tquerySpan.SetRoute(pgmesh.RouteModePrimary, len(groups))\n")
 	} else {
 		out.WriteString("\tvar shardKey SK\n")
-		fmt.Fprintf(out, "\tshard, routeErr := %s.store.mesh.Shard(shardKey)\n", defaultReceiverName)
+		fmt.Fprintf(out, "\tshard, routeErr := %s.store.mesh.Resolve(shardKey)\n", defaultReceiverName)
 		out.WriteString("\tif routeErr != nil {\n")
 		out.WriteString("\t\treturn finish(pgmesh.ResolvedFuture[int64](0, routeErr))\n")
 		out.WriteString("\t}\n")
@@ -1881,7 +1902,7 @@ func writeAsyncCopyMethod(out *bytes.Buffer, query *generatedQuery) {
 			"\tgroups := []*asyncCopyShardGroup{{shard: shard, args: %s}}\n",
 			inputName,
 		)
-		out.WriteString("\tquerySpan.SetRoute(pgmesh.RouteModePrimary)\n")
+		out.WriteString("\tquerySpan.SetRoute(pgmesh.RouteModePrimary, 1)\n")
 	}
 
 	out.WriteString("\tif len(groups) == 0 {\n")
@@ -1894,12 +1915,12 @@ func writeAsyncCopyMethod(out *bytes.Buffer, query *generatedQuery) {
 	out.WriteString("\t\treturn finish(pgmesh.ResolvedFuture[int64](0, err))\n")
 	out.WriteString("\t}\n")
 	out.WriteString("\tfor _, shardGroup := range groups {\n")
-	out.WriteString("\t\tshardGroup.batcher = state.batchers[shardGroup.shard.Name()]\n")
+	out.WriteString("\t\tshardGroup.batcher = state.batchers[shardGroup.shard.ReplicaSetName()]\n")
 	out.WriteString("\t\tif shardGroup.batcher == nil {\n")
 	out.WriteString("\t\t\tstate.mu.Unlock()\n")
 	fmt.Fprintf(
 		out,
-		"\t\t\terr := fmt.Errorf(%q, shardGroup.shard.Name())\n",
+		"\t\t\terr := fmt.Errorf(%q, shardGroup.shard.ReplicaSetName())\n",
 		"query "+async+" has no copy batcher for replica set %q",
 	)
 	out.WriteString("\t\t\treturn finish(pgmesh.ResolvedFuture[int64](0, err))\n")
@@ -1916,9 +1937,11 @@ func writeAsyncCopyMethod(out *bytes.Buffer, query *generatedQuery) {
 	out.WriteString("\t\tif state.enabled {\n")
 	out.WriteString("\t\t\tfuture = shardGroup.batcher.Submit(acceptedContext, shardGroup.args)\n")
 	out.WriteString("\t\t} else {\n")
-	out.WriteString("\t\t\tfuture = shardGroup.batcher.SubmitImmediate(acceptedContext, shardGroup.args)\n")
+	out.WriteString("\t\t\tfuture = shardGroup.batcher.SubmitUnbatched(acceptedContext, shardGroup.args)\n")
 	out.WriteString("\t\t}\n")
-	out.WriteString("\t\tasyncResults = append(asyncResults, asyncCopyResult{shardName: shardGroup.shard.Name(), future: future})\n")
+	out.WriteString(
+		"\t\tasyncResults = append(asyncResults, asyncCopyResult{shardName: shardGroup.shard.ReplicaSetName(), future: future})\n",
+	)
 	out.WriteString("\t}\n")
 	out.WriteString("\tstate.mu.Unlock()\n")
 	out.WriteString("\n\tcombined := pgmesh.RunFuture(func() (int64, error) {\n")
@@ -1984,12 +2007,14 @@ func writeAsyncCopyFlushMethod(out *bytes.Buffer, query *generatedQuery) {
 	out.WriteString("\t}\n")
 	fmt.Fprintf(
 		out,
-		"\tflushes := make([]copyFlushResult, 0, len(%s.store.mesh.AllShards()))\n",
+		"\tflushes := make([]copyFlushResult, 0, len(%s.store.mesh.ReplicaSets()))\n",
 		defaultReceiverName,
 	)
-	fmt.Fprintf(out, "\tfor _, shard := range %s.store.mesh.AllShards() {\n", defaultReceiverName)
-	out.WriteString("\t\tif batcher := state.batchers[shard.Name()]; batcher != nil {\n")
-	out.WriteString("\t\t\tflushes = append(flushes, copyFlushResult{shardName: shard.Name(), future: batcher.FlushAsync()})\n")
+	fmt.Fprintf(out, "\tfor _, replicaSet := range %s.store.mesh.ReplicaSets() {\n", defaultReceiverName)
+	out.WriteString("\t\tif batcher := state.batchers[replicaSet.Name()]; batcher != nil {\n")
+	out.WriteString(
+		"\t\t\tflushes = append(flushes, copyFlushResult{shardName: replicaSet.Name(), future: batcher.FlushAsync()})\n",
+	)
 	out.WriteString("\t\t}\n")
 	out.WriteString("\t}\n")
 	out.WriteString("\tstate.mu.Unlock()\n")
@@ -2028,7 +2053,7 @@ func writeShardedStore(
 
 	out.WriteString("type shardMapping struct {\n")
 	out.WriteString("\tmainReplicaSet string\n")
-	out.WriteString("\tvshards []uint64\n")
+	out.WriteString("\tvirtualShards []uint64\n")
 	out.WriteString("\tmirrorReplicaSets []string\n")
 	out.WriteString("}\n\n")
 
@@ -2054,21 +2079,25 @@ func writeShardedStore(
 	out.WriteString("\t\t})\n")
 	out.WriteString("\t}\n")
 	out.WriteString("}\n\n")
-	out.WriteString("// WithVShardMapping maps virtual shards to a main replica set and optional ordered write mirrors.\n")
-	out.WriteString("func WithVShardMapping(mainReplicaSet string, vshards []uint64, mirrorReplicaSets ...string) ShardedOption {\n")
-	out.WriteString("\tconfiguredVShards := append([]uint64(nil), vshards...)\n")
+	out.WriteString(
+		"// WithVirtualShardMapping maps virtual shards to a main replica set and optional ordered write mirrors.\n",
+	)
+	out.WriteString(
+		"func WithVirtualShardMapping(mainReplicaSet string, virtualShards []uint64, mirrorReplicaSets ...string) ShardedOption {\n",
+	)
+	out.WriteString("\tconfiguredVirtualShards := append([]uint64(nil), virtualShards...)\n")
 	out.WriteString("\tconfiguredMirrors := append([]string(nil), mirrorReplicaSets...)\n")
 	out.WriteString("\treturn func(options *shardedOptions) {\n")
 	out.WriteString("\t\toptions.mappings = append(options.mappings, shardMapping{\n")
 	out.WriteString("\t\t\tmainReplicaSet: mainReplicaSet,\n")
-	out.WriteString("\t\t\tvshards: append([]uint64(nil), configuredVShards...),\n")
+	out.WriteString("\t\t\tvirtualShards: append([]uint64(nil), configuredVirtualShards...),\n")
 	out.WriteString("\t\t\tmirrorReplicaSets: append([]string(nil), configuredMirrors...),\n")
 	out.WriteString("\t\t})\n")
 	out.WriteString("\t}\n")
 	out.WriteString("}\n\n")
 
 	fmt.Fprintf(out, "type shardedTopology[SK any] struct {\n")
-	out.WriteString("\tnumVShards uint64\n")
+	out.WriteString("\tvirtualShardCount uint64\n")
 	out.WriteString("\tshardHasher pgmesh.ShardHasher[SK]\n")
 	fmt.Fprintf(out, "\tresolver %s[SK]\n", opts.ResolverInterfaceName)
 	out.WriteString("\toptions shardedOptions\n")
@@ -2077,7 +2106,7 @@ func writeShardedStore(
 	fmt.Fprintf(out, "// %s returns an opaque sharded topology.\n", opts.ShardedConstructor)
 	fmt.Fprintf(
 		out,
-		"func %s[SK any](numVShards uint64, shardHasher pgmesh.ShardHasher[SK], resolver %s[SK], options ...ShardedOption) Topology {\n",
+		"func %s[SK any](virtualShardCount uint64, shardHasher pgmesh.ShardHasher[SK], resolver %s[SK], options ...ShardedOption) Topology {\n",
 		opts.ShardedConstructor,
 		opts.ResolverInterfaceName,
 	)
@@ -2089,7 +2118,7 @@ func writeShardedStore(
 	out.WriteString("\t\toption(&configured)\n")
 	out.WriteString("\t}\n")
 	out.WriteString("\treturn shardedTopology[SK]{\n")
-	out.WriteString("\t\tnumVShards: numVShards,\n")
+	out.WriteString("\t\tvirtualShardCount: virtualShardCount,\n")
 	out.WriteString("\t\tshardHasher: shardHasher,\n")
 	out.WriteString("\t\tresolver: resolver,\n")
 	out.WriteString("\t\toptions: configured,\n")
@@ -2106,7 +2135,9 @@ func writeShardedStore(
 	out.WriteString("\t\treturn nil, fmt.Errorf(\"pgmesh: shard resolver is nil\")\n")
 	out.WriteString("\t}\n")
 	fmt.Fprintf(out, "\tnodes := make(map[string]%s)\n", targetName(opts, "DBTX"))
-	out.WriteString("\tmeshOptions := make([]pgmesh.MeshOption, 0, len(c.options.replicaSets)+len(c.options.mappings)+3)\n")
+	out.WriteString(
+		"\tmeshOptions := make([]pgmesh.OpenMeshOption, 0, len(c.options.replicaSets)+len(c.options.mappings)+3)\n",
+	)
 	out.WriteString("\tfor setIndex, set := range c.options.replicaSets {\n")
 	out.WriteString("\t\tprimaryDSN := fmt.Sprintf(\"pgmesh-internal://%d/primary\", setIndex)\n")
 	out.WriteString("\t\tnodes[primaryDSN] = set.primary\n")
@@ -2119,9 +2150,9 @@ func writeShardedStore(
 	out.WriteString("\t\tmeshOptions = append(meshOptions, pgmesh.WithReplicaSet(set.name, primaryDSN, replicaDSNs...))\n")
 	out.WriteString("\t}\n")
 	out.WriteString("\tfor _, mapping := range c.options.mappings {\n")
-	out.WriteString("\t\tmeshOptions = append(meshOptions, pgmesh.WithVShardMapping(\n")
+	out.WriteString("\t\tmeshOptions = append(meshOptions, pgmesh.WithVirtualShardMapping(\n")
 	out.WriteString("\t\t\tmapping.mainReplicaSet,\n")
-	out.WriteString("\t\t\tmapping.vshards,\n")
+	out.WriteString("\t\t\tmapping.virtualShards,\n")
 	out.WriteString("\t\t\tmapping.mirrorReplicaSets...,\n")
 	out.WriteString("\t\t))\n")
 	out.WriteString("\t}\n")
@@ -2130,7 +2161,7 @@ func writeShardedStore(
 	out.WriteString("\t\tpgmesh.WithMeterProvider(options.meterProvider),\n")
 	out.WriteString("\t\tpgmesh.WithLogger(options.logger),\n")
 	out.WriteString("\t)\n")
-	out.WriteString("\tmesh, err := pgmesh.CreateMesh(ctx, c.numVShards,\n")
+	out.WriteString("\tmesh, err := pgmesh.OpenMesh(ctx, c.virtualShardCount,\n")
 	fmt.Fprintf(
 		out,
 		"\t\tfunc(_ context.Context, dsn string) (pgmesh.Node[*%s, *%s], error) {\n",
