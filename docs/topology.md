@@ -53,7 +53,7 @@ private runtime mesh starts at `ShardHasher` and selects an endpoint:
 
 ```mermaid
 flowchart TD
-    call["Generated Store query"]
+    queryCall["Generated Store query"]
     resolver["Generated route calls<br/>application ShardResolver"]
     key["Logical shard key"]
     hash["ShardHasher.Hash(key)"]
@@ -67,7 +67,7 @@ flowchart TD
     mirrorWrites["Write to mirror primaries<br/>sequentially and synchronously"]
     result["Return"]
 
-    call --> resolver --> key --> hash --> virtualShard --> mapping --> kind
+    queryCall --> resolver --> key --> hash --> virtualShard --> mapping --> kind
     kind -->|"default read"| read --> result
     kind -->|"strong read"| primaryRead --> result
     kind -->|"write"| primaryWrite --> mirrors
