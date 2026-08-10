@@ -43,7 +43,7 @@ func TestRouteMetadataDistinguishesPhysicalAndResolvedRoutes(t *testing.T) {
 			wantMetadata: pgmesh.RouteMetadata{
 				VirtualShardIndex: 0,
 				HasVirtualShard:   false,
-				PhysicalShardName: "main",
+				ReplicaSetName:    "main",
 				NodeName:          "replica-0",
 				NodeRole:          pgmesh.NodeRoleReadReplica,
 			},
@@ -58,7 +58,7 @@ func TestRouteMetadataDistinguishesPhysicalAndResolvedRoutes(t *testing.T) {
 			wantMetadata: pgmesh.RouteMetadata{
 				VirtualShardIndex: 0,
 				HasVirtualShard:   false,
-				PhysicalShardName: "main",
+				ReplicaSetName:    "main",
 				NodeName:          "primary",
 				NodeRole:          pgmesh.NodeRolePrimary,
 			},
@@ -73,7 +73,7 @@ func TestRouteMetadataDistinguishesPhysicalAndResolvedRoutes(t *testing.T) {
 			wantMetadata: pgmesh.RouteMetadata{
 				VirtualShardIndex: 2,
 				HasVirtualShard:   true,
-				PhysicalShardName: "main",
+				ReplicaSetName:    "main",
 				NodeName:          "replica-0",
 				NodeRole:          pgmesh.NodeRoleReadReplica,
 			},
@@ -88,7 +88,7 @@ func TestRouteMetadataDistinguishesPhysicalAndResolvedRoutes(t *testing.T) {
 			wantMetadata: pgmesh.RouteMetadata{
 				VirtualShardIndex: 2,
 				HasVirtualShard:   true,
-				PhysicalShardName: "main",
+				ReplicaSetName:    "main",
 				NodeName:          "primary",
 				NodeRole:          pgmesh.NodeRolePrimary,
 			},
@@ -105,7 +105,7 @@ func TestRouteMetadataDistinguishesPhysicalAndResolvedRoutes(t *testing.T) {
 			withoutVirtualShard := metadata.WithoutVirtualShard()
 			assert.Zero(t, withoutVirtualShard.VirtualShardIndex)
 			assert.False(t, withoutVirtualShard.HasVirtualShard)
-			assert.Equal(t, metadata.PhysicalShardName, withoutVirtualShard.PhysicalShardName)
+			assert.Equal(t, metadata.ReplicaSetName, withoutVirtualShard.ReplicaSetName)
 			assert.Equal(t, metadata.NodeName, withoutVirtualShard.NodeName)
 			assert.Equal(t, metadata.NodeRole, withoutVirtualShard.NodeRole)
 		})

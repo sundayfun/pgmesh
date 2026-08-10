@@ -4,11 +4,11 @@ Generated stores separate telemetry into three layers:
 
 1. A `store` measurement covers an optional application factory wrapper.
 2. An `operation` measurement covers one logical generated-method call.
-3. A `query` measurement covers one physical database execution on one shard
-   and node.
+3. A `query` measurement covers one physical database execution on one replica
+   set node and, when exact attribution is possible, one virtual shard.
 
 This distinction matters for fan-out. One scatter query contributes one
-operation data point and one query data point per physical shard. It therefore
+operation data point and one query data point per replica set. It therefore
 reports both caller-visible latency and the throughput and latency handled by
 each database node.
 
@@ -49,8 +49,8 @@ pgmesh never shuts down a provider.
 | --- | --- | --- | --- |
 | `pgmesh.query.store.duration` | Histogram | `s` | End-to-end duration of a configured factory wrapper |
 | `pgmesh.query.logical.duration` | Histogram | `s` | End-to-end duration of one logical generated-method call, including routing and fan-out aggregation |
-| `pgmesh.query.physical.duration` | Histogram | `s` | Duration of one physical database execution on one selected shard and node |
-| `pgmesh.query.physical.inflight` | UpDownCounter | `{query}` | Physical database queries currently in flight on each selected shard and node |
+| `pgmesh.query.physical.duration` | Histogram | `s` | Duration of one database execution on one selected replica-set node |
+| `pgmesh.query.physical.inflight` | UpDownCounter | `{query}` | Database queries currently in flight on each selected replica-set node |
 | `pgmesh.copy.batch.rows` | Histogram | `{row}` | Attempted rows in each physical COPY batch |
 | `pgmesh.copy.batch.submissions` | Histogram | `{submission}` | Logical submission fragments represented in each physical COPY batch |
 | `pgmesh.copy.batch.flushes` | Counter | `{batch}` | Physical COPY batches, grouped by flush reason |
@@ -61,7 +61,10 @@ Each histogram's count reports throughput for its layer:
 
 - Use `pgmesh.query.logical.duration` for application-call QPS and latency.
 - Use `pgmesh.query.physical.duration` for database QPS and latency, grouped by
-  `pgmesh.physical_shard.name`, `pgmesh.node.name`, and optionally query name.
+  `pgmesh.replica_set.name`, `pgmesh.node.name`, and optionally query name.
+- Group only by `pgmesh.replica_set.name` for replica-set aggregates, add
+  `pgmesh.node.name` and `pgmesh.node.role` for per-node metrics, or group by
+  `pgmesh.virtual_shard.index` for exact virtual-shard metrics.
 - Use `pgmesh.query.store.duration` with
   `pgmesh.store.delegated=false` for factory short-circuits such as
   cache hits, and `true` for delegations.
@@ -109,28 +112,44 @@ histogram_quantile(
 )
 ```
 
-Physical database QPS for every shard and selected node:
+Database QPS for every replica set and selected node:
 
 ```promql
-sum by ("pgmesh.physical_shard.name", "pgmesh.node.name", "pgmesh.node.role") (
+sum by ("pgmesh.replica_set.name", "pgmesh.node.name", "pgmesh.node.role") (
   rate({"pgmesh.query.physical.duration_count"}[5m])
 )
 ```
 
-Physical database queries currently in flight on every shard and selected node:
+Replica-set QPS, aggregated across its primary and read replicas:
 
 ```promql
-sum by ("pgmesh.physical_shard.name", "pgmesh.node.name", "pgmesh.node.role") (
+sum by ("pgmesh.replica_set.name") (
+  rate({"pgmesh.query.physical.duration_count"}[5m])
+)
+```
+
+Virtual-shard QPS for executions attributable to one exact virtual shard:
+
+```promql
+sum by ("pgmesh.virtual_shard.index") (
+  rate({"pgmesh.query.physical.duration_count"}[5m])
+)
+```
+
+Database queries currently in flight on every replica set and selected node:
+
+```promql
+sum by ("pgmesh.replica_set.name", "pgmesh.node.name", "pgmesh.node.role") (
   {"pgmesh.query.physical.inflight"}
 )
 ```
 
-Physical database p95 latency for every shard and selected node:
+Database p95 latency for every replica set and selected node:
 
 ```promql
 histogram_quantile(
   0.95,
-  sum by (le, "pgmesh.physical_shard.name", "pgmesh.node.name", "pgmesh.node.role") (
+  sum by (le, "pgmesh.replica_set.name", "pgmesh.node.name", "pgmesh.node.role") (
     rate({"pgmesh.query.physical.duration_bucket"}[5m])
   )
 )
@@ -145,7 +164,7 @@ Read-replica QPS can use the same throughput query with
 `"pgmesh.node.role"="read_replica"`:
 
 ```promql
-sum by ("pgmesh.physical_shard.name", "pgmesh.node.name") (
+sum by ("pgmesh.replica_set.name", "pgmesh.node.name") (
   rate({
     "pgmesh.query.physical.duration_count",
     "pgmesh.node.role"="read_replica"
@@ -158,7 +177,7 @@ Read-replica p95 latency:
 ```promql
 histogram_quantile(
   0.95,
-  sum by (le, "pgmesh.physical_shard.name", "pgmesh.node.name") (
+  sum by (le, "pgmesh.replica_set.name", "pgmesh.node.name") (
     rate({
       "pgmesh.query.physical.duration_bucket",
       "pgmesh.node.role"="read_replica"
@@ -174,7 +193,7 @@ Physical database error percentage for every generated method and target:
 sum by (
   "pgmesh.store.name",
   "pgmesh.query.name",
-  "pgmesh.physical_shard.name",
+  "pgmesh.replica_set.name",
   "pgmesh.node.name"
 ) (
   rate({
@@ -186,7 +205,7 @@ sum by (
 sum by (
   "pgmesh.store.name",
   "pgmesh.query.name",
-  "pgmesh.physical_shard.name",
+  "pgmesh.replica_set.name",
   "pgmesh.node.name"
 ) (
   rate({"pgmesh.query.physical.duration_count"}[5m])
@@ -229,7 +248,7 @@ Physical COPY p95 latency for every shard and selected node:
 ```promql
 histogram_quantile(
   0.95,
-  sum by (le, "pgmesh.physical_shard.name", "pgmesh.node.name") (
+  sum by (le, "pgmesh.replica_set.name", "pgmesh.node.name") (
     rate({"pgmesh.copy.batch.duration_bucket"}[5m])
   )
 )
@@ -265,7 +284,7 @@ wrapper:
 | `pgmesh.route.scope` | `single`, `fanout`, or `unresolved` |
 | `error.type` | Error type on failure; omitted on success |
 
-Logical spans and logs also include `pgmesh.route.physical_shard_count`. The count is
+Logical spans and logs also include `pgmesh.route.replica_set_count`. The count is
 not a metric dimension because arbitrary fan-out sizes would create unnecessary
 time series.
 
@@ -280,9 +299,10 @@ target:
 | `pgmesh.store.name` | Generated query-group name |
 | `pgmesh.query.name` | Generated query method name |
 | `pgmesh.query.kind` | `read` or `write` |
-| `pgmesh.physical_shard.name` | Configured physical-shard name |
+| `pgmesh.replica_set.name` | Configured replica-set name |
 | `pgmesh.node.name` | `primary`, `replica-N`, or `transaction` |
 | `pgmesh.node.role` | `primary`, `read_replica`, or `transaction` |
+| `pgmesh.virtual_shard.index` | Exact virtual-shard index when one can be attributed |
 | `pgmesh.route.mode` | `read`, `primary`, or `transaction` |
 | `error.type` | Error type on failed duration points; omitted from the live in-flight count |
 
@@ -296,12 +316,11 @@ underlying pool or connection. It therefore uses node name and role
 `transaction` instead of falsely attributing that execution to the configured
 primary.
 
-Physical-query spans and debug logs additionally include
+Physical-query metrics, spans, and debug logs include
 `pgmesh.virtual_shard.index` when one exact virtual shard was selected. Fan-out,
-grouped, and physical-shard scan queries omit it because one physical execution
-can represent several virtual shards. The attribute is always excluded from
-metrics: virtual shard counts can be large, whereas physical shard and node
-identities stay bounded by the deployed topology.
+grouped, and replica-set scan queries omit it because one physical execution can
+represent several virtual shards. Virtual-shard dimensions can have high
+cardinality, so deployments should size their metrics backend accordingly.
 
 ### COPY attributes
 

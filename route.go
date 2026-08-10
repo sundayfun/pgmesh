@@ -24,7 +24,7 @@ type Route[T any] struct {
 type RouteMetadata struct {
 	VirtualShardIndex uint64
 	HasVirtualShard   bool
-	PhysicalShardName string
+	ReplicaSetName    string
 	NodeName          string
 	NodeRole          NodeRole
 }

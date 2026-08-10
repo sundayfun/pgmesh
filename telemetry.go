@@ -65,22 +65,22 @@ const (
 	AttributeQueryName = "pgmesh.query.name"
 	// AttributeQueryKind identifies whether a routed query is a read or write.
 	AttributeQueryKind = "pgmesh.query.kind"
-	// AttributePhysicalShardName identifies the selected physical shard.
-	AttributePhysicalShardName = "pgmesh.physical_shard.name"
-	// AttributeVirtualShardIndex identifies the selected virtual shard on spans
-	// and logs. It is deliberately excluded from metrics to bound cardinality.
+	// AttributeReplicaSetName identifies the selected replica set.
+	AttributeReplicaSetName = "pgmesh.replica_set.name"
+	// AttributeVirtualShardIndex identifies the selected virtual shard when one
+	// exact virtual shard can be attributed to an execution.
 	AttributeVirtualShardIndex = "pgmesh.virtual_shard.index"
-	// AttributeNodeName identifies a stable node within a physical shard.
+	// AttributeNodeName identifies a stable node within a replica set.
 	AttributeNodeName = "pgmesh.node.name"
 	// AttributeNodeRole identifies whether the node is a primary or read replica.
 	AttributeNodeRole = "pgmesh.node.role"
 	// AttributeRouteMode identifies the database path selected for a query.
 	AttributeRouteMode = "pgmesh.route.mode"
-	// AttributeRouteScope identifies single-shard versus fan-out operations.
+	// AttributeRouteScope identifies single-replica-set versus fan-out operations.
 	AttributeRouteScope = "pgmesh.route.scope"
-	// AttributeRoutePhysicalShardCount reports the number of physical shards
+	// AttributeRouteReplicaSetCount reports the number of replica sets
 	// selected on spans and logs. It is excluded from metrics to bound cardinality.
-	AttributeRoutePhysicalShardCount = "pgmesh.route.physical_shard_count"
+	AttributeRouteReplicaSetCount = "pgmesh.route.replica_set_count"
 	// AttributeStoreDelegated reports whether an application-wrapped store call
 	// delegated to the generated logical query implementation.
 	AttributeStoreDelegated = "pgmesh.store.delegated"
@@ -119,9 +119,9 @@ const (
 type RouteScope string
 
 const (
-	// RouteScopeSingle identifies an operation targeting at most one physical shard.
+	// RouteScopeSingle identifies an operation targeting at most one replica set.
 	RouteScopeSingle RouteScope = "single"
-	// RouteScopeFanout identifies an operation targeting multiple physical shards.
+	// RouteScopeFanout identifies an operation targeting multiple replica sets.
 	RouteScopeFanout RouteScope = "fanout"
 	// RouteScopeUnresolved indicates that routing did not resolve a scope.
 	RouteScopeUnresolved RouteScope = "unresolved"
@@ -144,22 +144,22 @@ type meshTelemetry struct {
 // LogicalQuerySpan records tracing, metrics, and logging for one routed query.
 // The generated store calls End exactly once; direct callers must do the same.
 type LogicalQuerySpan struct {
-	ctx                context.Context
-	span               trace.Span
-	tracer             trace.Tracer
-	logicalDuration    metric.Float64Histogram
-	physicalDuration   metric.Float64Histogram
-	physicalInFlight   metric.Int64UpDownCounter
-	started            time.Time
-	attributes         []attribute.KeyValue
-	storeName          string
-	queryName          string
-	kind               QueryKind
-	routeMode          RouteMode
-	routeScope         RouteScope
-	physicalShardCount int
-	logger             *slog.Logger
-	logAttributes      []slog.Attr
+	ctx              context.Context
+	span             trace.Span
+	tracer           trace.Tracer
+	logicalDuration  metric.Float64Histogram
+	physicalDuration metric.Float64Histogram
+	physicalInFlight metric.Int64UpDownCounter
+	started          time.Time
+	attributes       []attribute.KeyValue
+	storeName        string
+	queryName        string
+	kind             QueryKind
+	routeMode        RouteMode
+	routeScope       RouteScope
+	replicaSetCount  int
+	logger           *slog.Logger
+	logAttributes    []slog.Attr
 }
 
 // PhysicalQuerySpan records one database execution on one resolved node.
@@ -330,7 +330,7 @@ func (t *meshTelemetry) setMeterProvider(provider metric.MeterProvider) error {
 }
 
 // NewCopyBatchObserver returns an observer used by generated stores to record
-// one metric point for every physical COPY operation on a physical shard.
+// one metric point for every physical COPY operation on a replica set.
 func (m *Mesh[R, W, K]) NewCopyBatchObserver(
 	storeName string,
 	queryName string,
@@ -340,10 +340,16 @@ func (m *Mesh[R, W, K]) NewCopyBatchObserver(
 		attribute.String(AttributeStoreName, storeName),
 		attribute.String(AttributeQueryName, queryName),
 		attribute.String(AttributeQueryKind, string(QueryKindWrite)),
-		attribute.String(AttributePhysicalShardName, route.PhysicalShardName),
+		attribute.String(AttributeReplicaSetName, route.ReplicaSetName),
 		attribute.String(AttributeNodeName, route.NodeName),
 		attribute.String(AttributeNodeRole, string(route.NodeRole)),
 		attribute.String(AttributeRouteMode, string(RouteModePrimary)),
+	}
+	if route.HasVirtualShard {
+		baseAttributes = append(
+			baseAttributes,
+			attribute.String(AttributeVirtualShardIndex, strconv.FormatUint(route.VirtualShardIndex, 10)),
+		)
 	}
 	return func(ctx context.Context, observation CopyBatchObservation) {
 		attributes := append(
@@ -453,21 +459,21 @@ func (m *Mesh[R, W, K]) StartLogicalQuerySpan(
 		trace.WithAttributes(attributes...),
 	)
 	return ctx, &LogicalQuerySpan{
-		ctx:                ctx,
-		span:               span,
-		tracer:             m.telemetry.tracer,
-		logicalDuration:    m.telemetry.logicalDuration,
-		physicalDuration:   m.telemetry.physicalDuration,
-		physicalInFlight:   m.telemetry.physicalInFlight,
-		started:            time.Now(),
-		attributes:         attributes[:3],
-		storeName:          storeName,
-		queryName:          queryName,
-		kind:               kind,
-		routeMode:          RouteModeUnresolved,
-		routeScope:         RouteScopeUnresolved,
-		physicalShardCount: 0,
-		logger:             m.telemetry.logger,
+		ctx:              ctx,
+		span:             span,
+		tracer:           m.telemetry.tracer,
+		logicalDuration:  m.telemetry.logicalDuration,
+		physicalDuration: m.telemetry.physicalDuration,
+		physicalInFlight: m.telemetry.physicalInFlight,
+		started:          time.Now(),
+		attributes:       attributes[:3],
+		storeName:        storeName,
+		queryName:        queryName,
+		kind:             kind,
+		routeMode:        RouteModeUnresolved,
+		routeScope:       RouteScopeUnresolved,
+		replicaSetCount:  0,
+		logger:           m.telemetry.logger,
 		logAttributes: []slog.Attr{
 			slog.String("store_name", storeName),
 			slog.String("query_name", queryName),
@@ -476,21 +482,21 @@ func (m *Mesh[R, W, K]) StartLogicalQuerySpan(
 	}
 }
 
-// SetRoute records the route mode and number of resolved physical shards.
+// SetRoute records the route mode and number of resolved replica sets.
 // A count of zero or one has single-route scope; larger counts have fan-out
 // scope.
-func (s *LogicalQuerySpan) SetRoute(mode RouteMode, physicalShardCount int) {
+func (s *LogicalQuerySpan) SetRoute(mode RouteMode, replicaSetCount int) {
 	scope := RouteScopeSingle
-	if physicalShardCount > 1 {
+	if replicaSetCount > 1 {
 		scope = RouteScopeFanout
 	}
 	s.routeMode = mode
 	s.routeScope = scope
-	s.physicalShardCount = physicalShardCount
+	s.replicaSetCount = replicaSetCount
 	routeAttributes := []attribute.KeyValue{
 		attribute.String(AttributeRouteMode, string(mode)),
 		attribute.String(AttributeRouteScope, string(scope)),
-		attribute.Int(AttributeRoutePhysicalShardCount, physicalShardCount),
+		attribute.Int(AttributeRouteReplicaSetCount, replicaSetCount),
 	}
 	s.span.SetAttributes(routeAttributes...)
 }
@@ -564,23 +570,23 @@ func startPhysicalQuerySpan(
 		attribute.String(AttributeStoreName, storeName),
 		attribute.String(AttributeQueryName, queryName),
 		attribute.String(AttributeQueryKind, string(kind)),
-		attribute.String(AttributePhysicalShardName, route.PhysicalShardName),
+		attribute.String(AttributeReplicaSetName, route.ReplicaSetName),
 		attribute.String(AttributeNodeName, node),
 		attribute.String(AttributeNodeRole, string(role)),
 		attribute.String(AttributeRouteMode, string(mode)),
 	}
-	spanAttributes := append([]attribute.KeyValue(nil), metricAttributes...)
 	if route.HasVirtualShard {
-		spanAttributes = append(
-			spanAttributes,
+		metricAttributes = append(
+			metricAttributes,
 			attribute.String(AttributeVirtualShardIndex, strconv.FormatUint(route.VirtualShardIndex, 10)),
 		)
 	}
+	spanAttributes := append([]attribute.KeyValue(nil), metricAttributes...)
 	logAttributes := []slog.Attr{
 		slog.String("store_name", storeName),
 		slog.String("query_name", queryName),
 		slog.String("query_kind", string(kind)),
-		slog.String("physical_shard", route.PhysicalShardName),
+		slog.String("replica_set", route.ReplicaSetName),
 		slog.String("node", node),
 		slog.String("node_role", string(role)),
 		slog.String("route_mode", string(mode)),
@@ -636,7 +642,7 @@ func (s *LogicalQuerySpan) End(err error) {
 			append([]slog.Attr(nil), s.logAttributes...),
 			slog.String("route_mode", string(s.routeMode)),
 			slog.String("route_scope", string(s.routeScope)),
-			slog.Int("physical_shard_count", s.physicalShardCount),
+			slog.Int("replica_set_count", s.replicaSetCount),
 			slog.Bool("failed", err != nil),
 			slog.Duration("duration", duration),
 		)

@@ -35,14 +35,14 @@ A physical database record has Debug level, message
 | `failed` | Boolean error outcome |
 | `duration` | Physical execution duration as a `slog.Duration` value |
 | `virtual_shard` | Exact virtual shard, encoded as a string and present only when known |
-| `physical_shard` | Configured physical-shard name |
+| `replica_set` | Configured replica-set name |
 | `node` | `primary`, `replica-N`, or `transaction` |
 | `node_role` | `primary`, `read_replica`, or `transaction` |
 | `route_mode` | `read`, `primary`, or `transaction` |
 | `error` | Error value, present only when the execution failed |
 
 A logical call produces `pgmesh logical query completed`. It has the common
-query attributes plus `route_mode`, `route_scope`, and `physical_shard_count`; its
+query attributes plus `route_mode`, `route_scope`, and `replica_set_count`; its
 duration includes routing, physical executions, and fan-out aggregation.
 
 A configured factory also produces a Debug record with message
