@@ -363,7 +363,7 @@ func TestQueryTelemetryRecordsSuccessfulQueries(t *testing.T) {
 	assert.Equal(t, uint64(2), operationHistogram.DataPoints[0].Count)
 }
 
-func TestQueryTelemetryRecordsConcurrentPhysicalQueries(t *testing.T) {
+func TestQueryTelemetryRecordsInflightPhysicalQueries(t *testing.T) {
 	t.Parallel()
 
 	reader := sdkmetric.NewManualReader()
@@ -399,11 +399,11 @@ func TestQueryTelemetryRecordsConcurrentPhysicalQueries(t *testing.T) {
 
 	var metrics metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(t.Context(), &metrics))
-	concurrent := metricInt64Sum(t, metrics, pgmesh.MetricQueryPhysicalConcurrent)
-	require.Len(t, concurrent.DataPoints, 1)
-	assert.Equal(t, int64(2), concurrent.DataPoints[0].Value)
-	assert.False(t, concurrent.IsMonotonic)
-	attributes := attributeMap(concurrent.DataPoints[0].Attributes.ToSlice())
+	inflight := metricInt64Sum(t, metrics, pgmesh.MetricQueryPhysicalInflight)
+	require.Len(t, inflight.DataPoints, 1)
+	assert.Equal(t, int64(2), inflight.DataPoints[0].Value)
+	assert.False(t, inflight.IsMonotonic)
+	attributes := attributeMap(inflight.DataPoints[0].Attributes.ToSlice())
 	assert.Equal(t, "UserStore", attributes[pgmesh.AttributeStoreName].AsString())
 	assert.Equal(t, "GetUser", attributes[pgmesh.AttributeQueryName].AsString())
 	assert.Equal(t, "read", attributes[pgmesh.AttributeQueryKind].AsString())
@@ -416,16 +416,16 @@ func TestQueryTelemetryRecordsConcurrentPhysicalQueries(t *testing.T) {
 	first.End(nil)
 	metrics = metricdata.ResourceMetrics{}
 	require.NoError(t, reader.Collect(t.Context(), &metrics))
-	concurrent = metricInt64Sum(t, metrics, pgmesh.MetricQueryPhysicalConcurrent)
-	require.Len(t, concurrent.DataPoints, 1)
-	assert.Equal(t, int64(1), concurrent.DataPoints[0].Value)
+	inflight = metricInt64Sum(t, metrics, pgmesh.MetricQueryPhysicalInflight)
+	require.Len(t, inflight.DataPoints, 1)
+	assert.Equal(t, int64(1), inflight.DataPoints[0].Value)
 
 	second.End(nil)
 	metrics = metricdata.ResourceMetrics{}
 	require.NoError(t, reader.Collect(t.Context(), &metrics))
-	concurrent = metricInt64Sum(t, metrics, pgmesh.MetricQueryPhysicalConcurrent)
-	require.Len(t, concurrent.DataPoints, 1)
-	assert.Zero(t, concurrent.DataPoints[0].Value)
+	inflight = metricInt64Sum(t, metrics, pgmesh.MetricQueryPhysicalInflight)
+	require.Len(t, inflight.DataPoints, 1)
+	assert.Zero(t, inflight.DataPoints[0].Value)
 }
 
 func TestStoreTelemetryRecordsFactoryShortCircuit(t *testing.T) {

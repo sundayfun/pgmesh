@@ -50,7 +50,7 @@ pgmesh never shuts down a provider.
 | `pgmesh.query.wrapper.duration` | Histogram | `s` | End-to-end duration of a configured factory wrapper |
 | `pgmesh.query.logical.duration` | Histogram | `s` | End-to-end duration of one logical generated-method call, including routing and fan-out aggregation |
 | `pgmesh.query.physical.duration` | Histogram | `s` | Duration of one physical database execution on one selected shard and node |
-| `pgmesh.query.physical.concurrent` | UpDownCounter | `{query}` | Physical database queries currently executing on each selected shard and node |
+| `pgmesh.query.physical.inflight` | UpDownCounter | `{query}` | Physical database queries currently in flight on each selected shard and node |
 | `pgmesh.copy.batch.rows` | Histogram | `{row}` | Attempted rows in each physical COPY batch |
 | `pgmesh.copy.batch.submissions` | Histogram | `{submission}` | Logical submission fragments represented in each physical COPY batch |
 | `pgmesh.copy.batch.flushes` | Counter | `{batch}` | Physical COPY batches, grouped by flush reason |
@@ -117,12 +117,11 @@ sum by ("pgmesh.shard.name", "pgmesh.node.name", "pgmesh.node.role") (
 )
 ```
 
-Physical database queries currently executing on every shard and selected
-node:
+Physical database queries currently in flight on every shard and selected node:
 
 ```promql
 sum by ("pgmesh.shard.name", "pgmesh.node.name", "pgmesh.node.role") (
-  {"pgmesh.query.physical.concurrent"}
+  {"pgmesh.query.physical.inflight"}
 )
 ```
 
@@ -273,7 +272,7 @@ time series.
 ### Physical-query attributes
 
 Every `pgmesh.query.physical.duration` and
-`pgmesh.query.physical.concurrent` data point identifies the exact selected
+`pgmesh.query.physical.inflight` data point identifies the exact selected
 target:
 
 | Attribute | Value |
@@ -285,7 +284,7 @@ target:
 | `pgmesh.node.name` | `primary`, `replica-N`, or `transaction` |
 | `pgmesh.node.role` | `primary`, `read_replica`, or `transaction` |
 | `pgmesh.route.mode` | `read`, `primary`, or `transaction` |
-| `error.type` | Error type on failed duration points; omitted from the live concurrent count |
+| `error.type` | Error type on failed duration points; omitted from the live in-flight count |
 
 Replica ordinals follow configuration order. For example,
 `WithReadReplicas(replica0, replica1)` produces `replica-0` and `replica-1`.
