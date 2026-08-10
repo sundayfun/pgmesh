@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +13,19 @@ import (
 
 	"github.com/sundayfun/pgmesh"
 )
+
+type cancelOnSecondErrContext struct {
+	context.Context
+
+	calls atomic.Int32
+}
+
+func (c *cancelOnSecondErrContext) Err() error {
+	if c.calls.Add(1) == 1 {
+		return nil
+	}
+	return context.Canceled
+}
 
 func awaitCopyRows(t *testing.T, started <-chan []int) []int {
 	t.Helper()
@@ -27,45 +41,181 @@ func awaitCopyRows(t *testing.T, started <-chan []int) []int {
 func TestCopyBatchConfigValidation(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, 32, pgmesh.DefaultCopyBatchMaxConcurrentCopies)
-	require.NoError(t, (pgmesh.CopyBatchConfig{}).Validate())
-	require.ErrorContains(t, (pgmesh.CopyBatchConfig{BatchSize: -1}).Validate(), "size")
-	require.ErrorContains(
-		t,
-		(pgmesh.CopyBatchConfig{FlushTimeout: -time.Nanosecond}).Validate(),
-		"timeout",
-	)
-	require.ErrorContains(
-		t,
-		(pgmesh.CopyBatchConfig{MaxConcurrentCopies: -1}).Validate(),
-		"concurrent",
-	)
-	_, err := pgmesh.NewCopyBatcher[int](pgmesh.CopyBatchConfig{}, nil)
-	assert.ErrorContains(t, err, "executor is nil")
+	assert.Equal(t, time.Millisecond, pgmesh.DefaultCopyBatchLinger)
+	assert.Equal(t, 32, pgmesh.DefaultCopyBatchMaxConcurrentBatches)
+	copyBatch := func(_ context.Context, rows []int) (int64, error) {
+		return int64(len(rows)), nil
+	}
+	tests := []struct {
+		name              string
+		config            pgmesh.CopyBatchConfig
+		copyBatch         pgmesh.CopyBatchFunc[int]
+		wantValidationErr string
+		wantConstructor   error
+	}{
+		{name: "zero values use defaults", copyBatch: copyBatch},
+		{
+			name:              "negative maximum rows per batch",
+			config:            pgmesh.CopyBatchConfig{MaxRowsPerBatch: -1},
+			copyBatch:         copyBatch,
+			wantValidationErr: "rows per batch",
+		},
+		{
+			name:              "negative linger",
+			config:            pgmesh.CopyBatchConfig{Linger: -time.Nanosecond},
+			copyBatch:         copyBatch,
+			wantValidationErr: "linger",
+		},
+		{
+			name:              "negative concurrent batches",
+			config:            pgmesh.CopyBatchConfig{MaxConcurrentBatches: -1},
+			copyBatch:         copyBatch,
+			wantValidationErr: "concurrent",
+		},
+		{
+			name:            "nil copy function",
+			copyBatch:       nil,
+			wantConstructor: pgmesh.ErrNilCopyBatchFunc,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			validationErr := test.config.Validate()
+			if test.wantValidationErr != "" {
+				require.ErrorContains(t, validationErr, test.wantValidationErr)
+			} else {
+				require.NoError(t, validationErr)
+			}
+
+			batcher, err := pgmesh.NewCopyBatcher(test.config, test.copyBatch)
+			switch {
+			case test.wantConstructor != nil:
+				require.ErrorIs(t, err, test.wantConstructor)
+				assert.Nil(t, batcher)
+			case test.wantValidationErr != "":
+				require.ErrorContains(t, err, test.wantValidationErr)
+				assert.Nil(t, batcher)
+			default:
+				require.NoError(t, err)
+				assert.NotNil(t, batcher)
+			}
+		})
+	}
 }
 
-func TestFutureAwaitCancellationDoesNotCancelWork(t *testing.T) {
+func TestCopyBatcherSubmissionEdges(t *testing.T) {
 	t.Parallel()
 
-	release := make(chan struct{})
-	future := pgmesh.RunFuture(func() (int, error) {
-		<-release
-		return 42, nil
-	})
-	canceled, cancel := context.WithCancel(t.Context())
-	cancel()
+	tests := []struct {
+		name    string
+		context func(*testing.T) context.Context
+		rows    []int
+		want    int64
+		wantErr error
+	}{
+		{
+			name:    "empty submission resolves without a copy",
+			context: func(t *testing.T) context.Context { return t.Context() },
+			rows:    nil,
+		},
+		{
+			name: "already canceled submission",
+			context: func(t *testing.T) context.Context {
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				return ctx
+			},
+			rows:    []int{1},
+			wantErr: context.Canceled,
+		},
+		{
+			name: "canceled before admission",
+			context: func(t *testing.T) context.Context {
+				return &cancelOnSecondErrContext{Context: t.Context(), calls: atomic.Int32{}}
+			},
+			rows:    []int{1},
+			wantErr: context.Canceled,
+		},
+	}
 
-	result, err := future.Await(canceled)
-	assert.Zero(t, result)
-	require.ErrorIs(t, err, context.Canceled)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var calls atomic.Int32
+			batcher, err := pgmesh.NewCopyBatcher(
+				pgmesh.CopyBatchConfig{},
+				func(_ context.Context, rows []int) (int64, error) {
+					calls.Add(1)
+					return int64(len(rows)), nil
+				},
+			)
+			require.NoError(t, err)
 
-	close(release)
-	result, err = future.Await(t.Context())
-	require.NoError(t, err)
-	assert.Equal(t, 42, result)
-	result, err = future.Await(t.Context())
-	require.NoError(t, err)
-	assert.Equal(t, 42, result)
+			got, err := batcher.Submit(test.context(t), test.rows).Await(t.Context())
+			if test.wantErr != nil {
+				require.ErrorIs(t, err, test.wantErr)
+				assert.Zero(t, got)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, test.want, got)
+			}
+			assert.Zero(t, calls.Load())
+		})
+	}
+}
+
+func TestCopyBatcherFlushEdges(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("copy failed")
+	tests := []struct {
+		name       string
+		submitRows []int
+		copyErr    error
+		wantErr    error
+		wantCalls  int32
+	}{
+		{name: "idle flush succeeds"},
+		{
+			name:       "flush returns pending copy error",
+			submitRows: []int{1},
+			copyErr:    sentinel,
+			wantErr:    sentinel,
+			wantCalls:  1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var calls atomic.Int32
+			batcher, err := pgmesh.NewCopyBatcher(
+				pgmesh.CopyBatchConfig{Linger: time.Hour},
+				func(_ context.Context, rows []int) (int64, error) {
+					calls.Add(1)
+					if test.copyErr != nil {
+						return 0, test.copyErr
+					}
+					return int64(len(rows)), nil
+				},
+				nil,
+			)
+			require.NoError(t, err)
+			if test.submitRows != nil {
+				batcher.Submit(t.Context(), test.submitRows)
+			}
+
+			err = batcher.Flush(t.Context())
+			if test.wantErr != nil {
+				require.ErrorIs(t, err, test.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, test.wantCalls, calls.Load())
+		})
+	}
 }
 
 func TestCopyBatcherCoalescesAndSplitsByRows(t *testing.T) {
@@ -75,9 +225,9 @@ func TestCopyBatcherCoalescesAndSplitsByRows(t *testing.T) {
 	var copies [][]int
 	batcher, err := pgmesh.NewCopyBatcher(
 		pgmesh.CopyBatchConfig{
-			BatchSize:           3,
-			FlushTimeout:        time.Hour,
-			MaxConcurrentCopies: 1,
+			MaxRowsPerBatch:      3,
+			Linger:               time.Hour,
+			MaxConcurrentBatches: 1,
 		},
 		func(_ context.Context, rows []int) (int64, error) {
 			mu.Lock()
@@ -103,16 +253,16 @@ func TestCopyBatcherCoalescesAndSplitsByRows(t *testing.T) {
 	mu.Unlock()
 }
 
-func TestCopyBatcherUsesDefaultMaxConcurrentCopies(t *testing.T) {
+func TestCopyBatcherUsesDefaultMaxConcurrentBatches(t *testing.T) {
 	t.Parallel()
 
-	started := make(chan struct{}, pgmesh.DefaultCopyBatchMaxConcurrentCopies+1)
+	started := make(chan struct{}, pgmesh.DefaultCopyBatchMaxConcurrentBatches+1)
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 
 	batcher, err := pgmesh.NewCopyBatcher(
-		pgmesh.CopyBatchConfig{BatchSize: 1, FlushTimeout: time.Hour},
+		pgmesh.CopyBatchConfig{MaxRowsPerBatch: 1, Linger: time.Hour},
 		func(_ context.Context, rows []int) (int64, error) {
 			started <- struct{}{}
 			<-release
@@ -121,12 +271,12 @@ func TestCopyBatcherUsesDefaultMaxConcurrentCopies(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	futures := make([]*pgmesh.Future[int64], 0, pgmesh.DefaultCopyBatchMaxConcurrentCopies+1)
-	for index := range pgmesh.DefaultCopyBatchMaxConcurrentCopies + 1 {
+	futures := make([]*pgmesh.Future[int64], 0, pgmesh.DefaultCopyBatchMaxConcurrentBatches+1)
+	for index := range pgmesh.DefaultCopyBatchMaxConcurrentBatches + 1 {
 		futures = append(futures, batcher.Submit(t.Context(), []int{index}))
 	}
 
-	for range pgmesh.DefaultCopyBatchMaxConcurrentCopies {
+	for range pgmesh.DefaultCopyBatchMaxConcurrentBatches {
 		select {
 		case <-started:
 		case <-time.After(time.Second):
@@ -152,19 +302,19 @@ func TestCopyBatcherUsesDefaultMaxConcurrentCopies(t *testing.T) {
 	}
 }
 
-func TestCopyBatcherMergesQueuedTimeoutBatchesUpToBatchSize(t *testing.T) {
+func TestCopyBatcherMergesQueuedLingerExpiredBatchesUpToRowLimit(t *testing.T) {
 	t.Parallel()
 
-	const flushTimeout = 5 * time.Millisecond
+	const linger = 5 * time.Millisecond
 	started := make(chan []int, 3)
 	releaseFirst := make(chan struct{})
 	var calls int
 	var mu sync.Mutex
 	batcher, err := pgmesh.NewCopyBatcher(
 		pgmesh.CopyBatchConfig{
-			BatchSize:           5,
-			FlushTimeout:        flushTimeout,
-			MaxConcurrentCopies: 1,
+			MaxRowsPerBatch:      5,
+			Linger:               linger,
+			MaxConcurrentBatches: 1,
 		},
 		func(_ context.Context, rows []int) (int64, error) {
 			mu.Lock()
@@ -184,11 +334,11 @@ func TestCopyBatcherMergesQueuedTimeoutBatchesUpToBatchSize(t *testing.T) {
 	assert.Equal(t, []int{1}, awaitCopyRows(t, started))
 
 	second := batcher.Submit(t.Context(), []int{2, 3})
-	time.Sleep(3 * flushTimeout)
+	time.Sleep(3 * linger)
 	third := batcher.Submit(t.Context(), []int{4, 5})
-	time.Sleep(3 * flushTimeout)
+	time.Sleep(3 * linger)
 	fourth := batcher.Submit(t.Context(), []int{6, 7})
-	time.Sleep(3 * flushTimeout)
+	time.Sleep(3 * linger)
 
 	close(releaseFirst)
 	assert.Equal(t, []int{2, 3, 4, 5}, awaitCopyRows(t, started))
@@ -209,19 +359,19 @@ func TestCopyBatcherMergesQueuedTimeoutBatchesUpToBatchSize(t *testing.T) {
 	}
 }
 
-func TestCopyBatcherDoesNotMergeAcrossImmediateBatch(t *testing.T) {
+func TestCopyBatcherDoesNotMergeAcrossUnbatchedCopy(t *testing.T) {
 	t.Parallel()
 
-	const flushTimeout = 5 * time.Millisecond
+	const linger = 5 * time.Millisecond
 	started := make(chan []int, 4)
 	releaseFirst := make(chan struct{})
 	var calls int
 	var mu sync.Mutex
 	batcher, err := pgmesh.NewCopyBatcher(
 		pgmesh.CopyBatchConfig{
-			BatchSize:           10,
-			FlushTimeout:        flushTimeout,
-			MaxConcurrentCopies: 1,
+			MaxRowsPerBatch:      10,
+			Linger:               linger,
+			MaxConcurrentBatches: 1,
 		},
 		func(_ context.Context, rows []int) (int64, error) {
 			mu.Lock()
@@ -240,23 +390,23 @@ func TestCopyBatcherDoesNotMergeAcrossImmediateBatch(t *testing.T) {
 	first := batcher.Submit(t.Context(), []int{1})
 	assert.Equal(t, []int{1}, awaitCopyRows(t, started))
 	second := batcher.Submit(t.Context(), []int{2})
-	time.Sleep(3 * flushTimeout)
-	immediate := batcher.SubmitImmediate(t.Context(), []int{3})
+	time.Sleep(3 * linger)
+	unbatched := batcher.SubmitUnbatched(t.Context(), []int{3})
 	third := batcher.Submit(t.Context(), []int{4})
-	time.Sleep(3 * flushTimeout)
+	time.Sleep(3 * linger)
 
 	close(releaseFirst)
 	assert.Equal(t, []int{2}, awaitCopyRows(t, started))
 	assert.Equal(t, []int{3}, awaitCopyRows(t, started))
 	assert.Equal(t, []int{4}, awaitCopyRows(t, started))
 
-	for _, future := range []*pgmesh.Future[int64]{first, second, immediate, third} {
+	for _, future := range []*pgmesh.Future[int64]{first, second, unbatched, third} {
 		_, err = future.Await(t.Context())
 		require.NoError(t, err)
 	}
 }
 
-func TestCopyBatcherUsesDefaultTimeout(t *testing.T) {
+func TestCopyBatcherUsesDefaultLinger(t *testing.T) {
 	t.Parallel()
 
 	called := make(chan []int, 1)
@@ -283,7 +433,7 @@ func TestCopyBatcherObservesPhysicalBatchBoundaries(t *testing.T) {
 
 	observations := make(chan pgmesh.CopyBatchObservation, 4)
 	batcher, err := pgmesh.NewCopyBatcher(
-		pgmesh.CopyBatchConfig{BatchSize: 2, FlushTimeout: time.Hour},
+		pgmesh.CopyBatchConfig{MaxRowsPerBatch: 2, Linger: time.Hour},
 		func(_ context.Context, rows []int) (int64, error) {
 			return int64(len(rows)), nil
 		},
@@ -300,31 +450,31 @@ func TestCopyBatcherObservesPhysicalBatchBoundaries(t *testing.T) {
 	_, err = second.Await(t.Context())
 	require.NoError(t, err)
 	sized := <-observations
-	assert.Equal(t, 2, sized.Rows)
-	assert.Equal(t, 2, sized.Submissions)
-	assert.Equal(t, pgmesh.CopyBatchFlushReasonSize, sized.FlushReason)
+	assert.Equal(t, 2, sized.RowCount)
+	assert.Equal(t, 2, sized.SubmissionCount)
+	assert.Equal(t, pgmesh.CopyBatchFlushReasonFull, sized.Reason)
 	assert.GreaterOrEqual(t, sized.QueueDuration, time.Duration(0))
-	assert.GreaterOrEqual(t, sized.Duration, time.Duration(0))
+	assert.GreaterOrEqual(t, sized.ExecutionDuration, time.Duration(0))
 	require.NoError(t, sized.Err)
 
-	_, err = batcher.SubmitImmediate(t.Context(), []int{3, 4, 5}).Await(t.Context())
+	_, err = batcher.SubmitUnbatched(t.Context(), []int{3, 4, 5}).Await(t.Context())
 	require.NoError(t, err)
-	immediate := <-observations
-	assert.Equal(t, 3, immediate.Rows)
-	assert.Equal(t, 1, immediate.Submissions)
-	assert.Equal(t, pgmesh.CopyBatchFlushReasonImmediate, immediate.FlushReason)
+	unbatched := <-observations
+	assert.Equal(t, 3, unbatched.RowCount)
+	assert.Equal(t, 1, unbatched.SubmissionCount)
+	assert.Equal(t, pgmesh.CopyBatchFlushReasonUnbatched, unbatched.Reason)
 
 	pending := batcher.Submit(t.Context(), []int{6})
 	require.NoError(t, batcher.Flush(t.Context()))
 	_, err = pending.Await(t.Context())
 	require.NoError(t, err)
-	explicit := <-observations
-	assert.Equal(t, 1, explicit.Rows)
-	assert.Equal(t, 1, explicit.Submissions)
-	assert.Equal(t, pgmesh.CopyBatchFlushReasonExplicit, explicit.FlushReason)
+	manual := <-observations
+	assert.Equal(t, 1, manual.RowCount)
+	assert.Equal(t, 1, manual.SubmissionCount)
+	assert.Equal(t, pgmesh.CopyBatchFlushReasonManual, manual.Reason)
 
-	timed, err := pgmesh.NewCopyBatcher(
-		pgmesh.CopyBatchConfig{FlushTimeout: time.Millisecond},
+	lingering, err := pgmesh.NewCopyBatcher(
+		pgmesh.CopyBatchConfig{Linger: time.Millisecond},
 		func(_ context.Context, rows []int) (int64, error) {
 			return int64(len(rows)), nil
 		},
@@ -333,10 +483,10 @@ func TestCopyBatcherObservesPhysicalBatchBoundaries(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
-	_, err = timed.Submit(t.Context(), []int{7}).Await(t.Context())
+	_, err = lingering.Submit(t.Context(), []int{7}).Await(t.Context())
 	require.NoError(t, err)
-	timeout := <-observations
-	assert.Equal(t, pgmesh.CopyBatchFlushReasonTimeout, timeout.FlushReason)
+	linger := <-observations
+	assert.Equal(t, pgmesh.CopyBatchFlushReasonLinger, linger.Reason)
 }
 
 func TestCopyBatcherSharesErrorsAndRejectsCountMismatch(t *testing.T) {
@@ -344,7 +494,7 @@ func TestCopyBatcherSharesErrorsAndRejectsCountMismatch(t *testing.T) {
 
 	copyErr := errors.New("copy failed")
 	failing, err := pgmesh.NewCopyBatcher(
-		pgmesh.CopyBatchConfig{BatchSize: 2},
+		pgmesh.CopyBatchConfig{MaxRowsPerBatch: 2},
 		func(context.Context, []int) (int64, error) { return 0, copyErr },
 	)
 	require.NoError(t, err)
@@ -356,7 +506,7 @@ func TestCopyBatcherSharesErrorsAndRejectsCountMismatch(t *testing.T) {
 	require.ErrorIs(t, err, copyErr)
 
 	mismatch, err := pgmesh.NewCopyBatcher(
-		pgmesh.CopyBatchConfig{BatchSize: 1},
+		pgmesh.CopyBatchConfig{MaxRowsPerBatch: 1},
 		func(context.Context, []int) (int64, error) { return 0, nil },
 	)
 	require.NoError(t, err)
@@ -372,7 +522,7 @@ func TestCopyBatcherFlushIsABarrier(t *testing.T) {
 	var calls int
 	var mu sync.Mutex
 	batcher, err := pgmesh.NewCopyBatcher(
-		pgmesh.CopyBatchConfig{FlushTimeout: time.Hour},
+		pgmesh.CopyBatchConfig{Linger: time.Hour},
 		func(_ context.Context, rows []int) (int64, error) {
 			mu.Lock()
 			calls++

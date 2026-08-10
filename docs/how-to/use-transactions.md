@@ -23,8 +23,8 @@ Use the same resolver, hasher, and mapping as the store configuration:
 ```go
 resolver := tenantResolver{}
 key := resolver.TenantKey(db.TenantKey{TenantID: tenantID})
-vshard := hasher.Hash(key)
-replicaSetName := configuredReplicaSetFor(vshard)
+virtualShard := hasher.Hash(key)
+replicaSetName := configuredReplicaSetFor(virtualShard)
 ```
 
 Keep this placement helper beside topology construction so transaction setup

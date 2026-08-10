@@ -13,7 +13,7 @@ func ExampleStore() {
 		context.Background(),
 		Sharded(
 			1,
-			pgmesh.ConstantShardHashFor[uint64](0),
+			pgmesh.NewConstantShardHasher[uint64](0),
 			tenantResolver{},
 			WithReplicaSet(
 				"main",
@@ -21,7 +21,7 @@ func ExampleStore() {
 				&fakeDB{name: "replica", log: log},
 			),
 			WithReplicaSet("mirror", &fakeDB{name: "mirror", log: log}),
-			WithVShardMapping("main", []uint64{0}, "mirror"),
+			WithVirtualShardMapping("main", []uint64{0}, "mirror"),
 		),
 	)
 	if err != nil {

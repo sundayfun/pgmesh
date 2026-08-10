@@ -61,7 +61,10 @@ const (
 )
 
 // Generate implements sqlc's CodegenService.Generate hook.
-func Generate(_ context.Context, req *plugin.GenerateRequest) (*plugin.GenerateResponse, error) {
+func Generate(ctx context.Context, req *plugin.GenerateRequest) (*plugin.GenerateResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("generate pgmesh wrappers: %w", err)
+	}
 	opts, err := parseOptions(req)
 	if err != nil {
 		return nil, fmt.Errorf("parse options: %w", err)

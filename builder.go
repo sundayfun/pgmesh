@@ -9,37 +9,38 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Builder incrementally assembles and validates an immutable Mesh topology.
-// A Builder is intended for single-goroutine setup; the Mesh returned by Build
-// can be shared by concurrent callers when its configured nodes can be shared.
-type Builder[R any, W Mirrorable[W], SK any] struct {
-	vshards   []*ReplicaSet[R, W]
-	hasher    ShardHasher[SK]
-	telemetry queryTelemetry
-	err       error
+// MeshBuilder incrementally assembles and validates an immutable Mesh from
+// existing nodes. A builder is intended for single-goroutine setup; the Mesh
+// returned by Build can be shared when its configured nodes can be shared.
+type MeshBuilder[R any, W MirrorableWriter[W], K any] struct {
+	virtualShards []*ReplicaSet[R, W]
+	hasher        ShardHasher[K]
+	telemetry     meshTelemetry
+	err           error
 }
 
-// NewBuilder creates a builder with numVShards unlinked virtual shards.
-func NewBuilder[R any, W Mirrorable[W], SK any](numVShards uint64) *Builder[R, W, SK] {
-	telemetry, telemetryErr := newQueryTelemetry(nil, nil)
-	return &Builder[R, W, SK]{
-		vshards:   make([]*ReplicaSet[R, W], numVShards),
-		hasher:    nil,
-		telemetry: telemetry,
-		err:       telemetryErr,
+// NewMeshBuilder creates a builder with virtualShardCount unmapped virtual
+// shards.
+func NewMeshBuilder[R any, W MirrorableWriter[W], K any](virtualShardCount uint64) *MeshBuilder[R, W, K] {
+	telemetry, telemetryErr := newMeshTelemetry(nil, nil)
+	return &MeshBuilder[R, W, K]{
+		virtualShards: make([]*ReplicaSet[R, W], virtualShardCount),
+		hasher:        nil,
+		telemetry:     telemetry,
+		err:           telemetryErr,
 	}
 }
 
 // WithTracerProvider configures the provider used for routed query spans.
 // A nil provider uses the global OpenTelemetry tracer provider.
-func (b *Builder[R, W, SK]) WithTracerProvider(provider trace.TracerProvider) *Builder[R, W, SK] {
+func (b *MeshBuilder[R, W, K]) WithTracerProvider(provider trace.TracerProvider) *MeshBuilder[R, W, K] {
 	b.telemetry.setTracerProvider(provider)
 	return b
 }
 
 // WithMeterProvider configures the provider used for routed query metrics.
 // A nil provider uses the global OpenTelemetry meter provider.
-func (b *Builder[R, W, SK]) WithMeterProvider(provider metric.MeterProvider) *Builder[R, W, SK] {
+func (b *MeshBuilder[R, W, K]) WithMeterProvider(provider metric.MeterProvider) *MeshBuilder[R, W, K] {
 	if err := b.telemetry.setMeterProvider(provider); err != nil && b.err == nil {
 		b.err = fmt.Errorf("configure OpenTelemetry metrics: %w", err)
 	}
@@ -48,79 +49,82 @@ func (b *Builder[R, W, SK]) WithMeterProvider(provider metric.MeterProvider) *Bu
 
 // WithLogger configures optional structured logging for routed queries.
 // Completed queries are logged at Debug level. A nil logger disables logging.
-func (b *Builder[R, W, SK]) WithLogger(logger *slog.Logger) *Builder[R, W, SK] {
+func (b *MeshBuilder[R, W, K]) WithLogger(logger *slog.Logger) *MeshBuilder[R, W, K] {
 	b.telemetry.logger = logger
 	return b
 }
 
-// WithHasher configures the mapping from shard keys to virtual shard indexes.
-func (b *Builder[R, W, SK]) WithHasher(hasher ShardHasher[SK]) *Builder[R, W, SK] {
+// WithShardHasher configures the mapping from shard keys to virtual shards.
+func (b *MeshBuilder[R, W, K]) WithShardHasher(hasher ShardHasher[K]) *MeshBuilder[R, W, K] {
 	b.hasher = hasher
 	return b
 }
 
-// Link records validation failures and returns the builder so topology setup
-// remains fluent without panics. Build returns the first recorded error.
-func (b *Builder[R, W, SK]) Link(vshard uint64, rs *ReplicaSet[R, W]) *Builder[R, W, SK] {
+// MapVirtualShard assigns one virtual shard to a replica set. It records the
+// first validation failure so topology setup remains fluent without panics.
+func (b *MeshBuilder[R, W, K]) MapVirtualShard(
+	virtualShardIndex uint64,
+	replicaSet *ReplicaSet[R, W],
+) *MeshBuilder[R, W, K] {
 	if b.err != nil {
 		return b
 	}
-	if vshard >= uint64(len(b.vshards)) {
-		b.err = fmt.Errorf("%w: %d", ErrVShardOutOfRange, vshard)
+	if virtualShardIndex >= uint64(len(b.virtualShards)) {
+		b.err = fmt.Errorf("%w: %d", ErrVirtualShardOutOfRange, virtualShardIndex)
 		return b
 	}
-	if rs == nil {
-		b.err = fmt.Errorf("%w: vshard %d", ErrNilReplicaSet, vshard)
+	if replicaSet == nil {
+		b.err = fmt.Errorf("%w: virtual shard %d", ErrNilReplicaSet, virtualShardIndex)
 		return b
 	}
-	if b.vshards[vshard] != nil {
-		b.err = fmt.Errorf("%w: %d", ErrDuplicateVShard, vshard)
+	if b.virtualShards[virtualShardIndex] != nil {
+		b.err = fmt.Errorf("%w: %d", ErrVirtualShardAlreadyMapped, virtualShardIndex)
 		return b
 	}
-	b.vshards[vshard] = rs
+	b.virtualShards[virtualShardIndex] = replicaSet
 	return b
 }
 
 // Build validates the topology and returns an immutable mesh. It retains the
 // configured node and telemetry providers; callers remain responsible for
 // shutting down database pools and OpenTelemetry SDK providers.
-func (b *Builder[R, W, SK]) Build() (*Mesh[R, W, SK], error) {
+func (b *MeshBuilder[R, W, K]) Build() (*Mesh[R, W, K], error) {
 	if b.err != nil {
 		return nil, b.err
 	}
-	if len(b.vshards) == 0 {
-		return nil, ErrNoVShards
+	if len(b.virtualShards) == 0 {
+		return nil, ErrNoVirtualShards
 	}
 	if b.hasher == nil {
-		return nil, ErrNoShardHasher
+		return nil, ErrNilShardHasher
 	}
 
-	vshards := make([]virtualShard[R, W], len(b.vshards))
-	physical := make([]*Shard[R, W], 0)
+	virtualShards := make([]*ReplicaSet[R, W], len(b.virtualShards))
+	replicaSets := make([]*ReplicaSet[R, W], 0)
 	seen := make(map[*ReplicaSet[R, W]]struct{})
 	seenNames := make(map[string]*ReplicaSet[R, W])
-	for index, rs := range b.vshards {
-		if rs == nil {
-			return nil, fmt.Errorf("%w: %d", ErrMissingVShard, index)
+	for index, replicaSet := range b.virtualShards {
+		if replicaSet == nil {
+			return nil, fmt.Errorf("%w: %d", ErrVirtualShardNotMapped, index)
 		}
-		if strings.TrimSpace(rs.Name()) == "" {
-			return nil, fmt.Errorf("%w: vshard %d", ErrEmptyReplicaSetName, index)
+		if strings.TrimSpace(replicaSet.Name()) == "" {
+			return nil, fmt.Errorf("%w: virtual shard %d", ErrEmptyReplicaSetName, index)
 		}
-		if previous, ok := seenNames[rs.Name()]; ok && previous != rs {
-			return nil, fmt.Errorf("%w: %q", ErrDuplicateReplicaSet, rs.Name())
+		if previous, ok := seenNames[replicaSet.Name()]; ok && previous != replicaSet {
+			return nil, fmt.Errorf("%w: %q", ErrDuplicateReplicaSet, replicaSet.Name())
 		}
-		seenNames[rs.Name()] = rs
-		vshards[index] = virtualShard[R, W]{index: uint64(index), replicaSet: rs}
-		if _, ok := seen[rs]; !ok {
-			seen[rs] = struct{}{}
-			physical = append(physical, &Shard[R, W]{vshardIndex: uint64(index), ReplicaSet: rs})
+		seenNames[replicaSet.Name()] = replicaSet
+		virtualShards[index] = replicaSet
+		if _, ok := seen[replicaSet]; !ok {
+			seen[replicaSet] = struct{}{}
+			replicaSets = append(replicaSets, replicaSet)
 		}
 	}
 
-	return &Mesh[R, W, SK]{
-		vshards:   vshards,
-		physical:  physical,
-		hasher:    b.hasher,
-		telemetry: b.telemetry,
+	return &Mesh[R, W, K]{
+		virtualShards: virtualShards,
+		replicaSets:   replicaSets,
+		hasher:        b.hasher,
+		telemetry:     b.telemetry,
 	}, nil
 }

@@ -206,17 +206,17 @@ func (q *meshStore[SK]) initializeCopyBatchers(options storeOptions) error {
 		enabled:  copyAccountsBatchEnabled,
 		batchers: make(map[string]*pgmesh.CopyBatcher[*CopyAccountsParams]),
 	}
-	for _, shard := range q.mesh.AllShards() {
-		route := shard.WriteRoute()
+	for _, replicaSet := range q.mesh.ReplicaSets() {
+		route := replicaSet.WriteRoute()
 		batcher, err := pgmesh.NewCopyBatcher[*CopyAccountsParams](copyAccountsBatchConfig, func(ctx context.Context, rows []*CopyAccountsParams) (count int64, queryErr error) {
-			queryCtx, physicalQuerySpan := q.mesh.StartQuerySpan(ctx, "Accounts", "CopyAccounts", pgmesh.QueryKindWrite, route.Metadata().WithoutVirtualShard(), pgmesh.RouteModePrimary)
+			queryCtx, physicalQuerySpan := q.mesh.StartPhysicalQuerySpan(ctx, "Accounts", "CopyAccounts", pgmesh.QueryKindWrite, route.Metadata(), pgmesh.RouteModePrimary)
 			defer func() { physicalQuerySpan.End(queryErr) }()
 			return route.Target.CopyAccounts(queryCtx, rows)
-		}, q.mesh.CopyBatchObserver("Accounts", "CopyAccounts", route.Metadata()))
+		}, q.mesh.NewCopyBatchObserver("Accounts", "CopyAccounts", route.Metadata()))
 		if err != nil {
 			return fmt.Errorf("configure CopyAccounts copy batching: %w", err)
 		}
-		copyAccountsBatch.batchers[shard.Name()] = batcher
+		copyAccountsBatch.batchers[replicaSet.Name()] = batcher
 	}
 	q.copyAccountsBatch = copyAccountsBatch
 	return nil
@@ -271,12 +271,12 @@ func (c singletonTopology) buildStore(_ context.Context, options storeOptions) (
 		mirrors = append(mirrors, newStoreNode(database).Writer())
 	}
 	replicaSet = replicaSet.WithWriteMirrors(mirrors...)
-	mesh, err := pgmesh.NewBuilder[*readQueries, *queryStore, uint8](1).
-		WithHasher(pgmesh.ConstantShardHashFor[uint8](0)).
+	mesh, err := pgmesh.NewMeshBuilder[*readQueries, *queryStore, uint8](1).
+		WithShardHasher(pgmesh.NewConstantShardHasher[uint8](0)).
 		WithTracerProvider(options.tracerProvider).
 		WithMeterProvider(options.meterProvider).
 		WithLogger(options.logger).
-		Link(0, replicaSet).
+		MapVirtualShard(0, replicaSet).
 		Build()
 	if err != nil {
 		return nil, err

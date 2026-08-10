@@ -14,11 +14,11 @@ import (
 )
 
 const (
-	shard0Name       = "shard-0"
-	shard1Name       = "shard-1"
-	futureShard0Name = "future-shard-0"
-	futureShard1Name = "future-shard-1"
-	numVShards       = 2
+	shard0Name        = "shard-0"
+	shard1Name        = "shard-1"
+	futureShard0Name  = "future-shard-0"
+	futureShard1Name  = "future-shard-1"
+	virtualShardCount = 2
 )
 
 type config struct {
@@ -164,15 +164,15 @@ func createStore(
 	store, err := sharded.NewStore(
 		ctx,
 		sharded.Sharded(
-			numVShards,
-			pgmesh.ModularShardHashFor[uint64](numVShards),
+			virtualShardCount,
+			pgmesh.NewModuloShardHasher[uint64](virtualShardCount),
 			tenantResolver{},
 			sharded.WithReplicaSet(shard0Name, shard0Primary, shard0Replica),
 			sharded.WithReplicaSet(shard1Name, shard1Primary, shard1Replica),
 			sharded.WithReplicaSet(futureShard0Name, shard0Future),
 			sharded.WithReplicaSet(futureShard1Name, shard1Future),
-			sharded.WithVShardMapping(shard0Name, []uint64{0}, futureShard0Name),
-			sharded.WithVShardMapping(shard1Name, []uint64{1}, futureShard1Name),
+			sharded.WithVirtualShardMapping(shard0Name, []uint64{0}, futureShard0Name),
+			sharded.WithVirtualShardMapping(shard1Name, []uint64{1}, futureShard1Name),
 		),
 	)
 	if err != nil {
@@ -207,7 +207,7 @@ func updateInTransaction(
 	accountID int64,
 ) (*sharded.Account, error) {
 	shardName := shard0Name
-	if (tenantResolver{}).TenantKey(sharded.TenantKey{TenantID: tenantID})%numVShards == 1 {
+	if (tenantResolver{}).TenantKey(sharded.TenantKey{TenantID: tenantID})%virtualShardCount == 1 {
 		shardName = shard1Name
 	}
 	dsn, err := cfg.primaryDSN(shardName)

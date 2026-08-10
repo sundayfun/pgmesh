@@ -30,13 +30,13 @@ combine them deterministically.
 
 ## 2. Choose the virtual-shard count and hash
 
-The hash must return an index in `[0, NumVShards)`. Integer keys can use the
+The hash must return an index in `[0, virtualShardCount)`. Integer keys can use the
 built-in modular hasher:
 
 ```go
-const numVShards = 128
+const virtualShardCount = 128
 
-hasher := pgmesh.ModularShardHashFor[uint64](numVShards)
+hasher := pgmesh.NewModuloShardHasher[uint64](virtualShardCount)
 ```
 
 Use a custom `pgmesh.ShardHasher` when the key is not integer-like or when an
@@ -62,13 +62,13 @@ lifecycle.
 
 ```go
 mappingOptions := []db.ShardedOption{
-    db.WithVShardMapping("shard-0", pgmesh.VShardRange(0, 64)),
-    db.WithVShardMapping("shard-1", pgmesh.VShardRange(64, 128)),
+    db.WithVirtualShardMapping("shard-0", pgmesh.VirtualShardRange(0, 64)),
+    db.WithVirtualShardMapping("shard-1", pgmesh.VirtualShardRange(64, 128)),
 }
 ```
 
-`VShardRange(from, to)` is half-open. Every index from zero through
-`NumVShards - 1` must occur once. Missing, duplicate, and out-of-range entries
+`VirtualShardRange(from, to)` is half-open. Every index from zero through
+`virtualShardCount - 1` must occur once. Missing, duplicate, and out-of-range entries
 are rejected when the mesh is created.
 
 Changing this mapping tells pgmesh where requests should go; it does not move
@@ -85,7 +85,7 @@ topologyOptions := append(replicaSetOptions, mappingOptions...)
 queries, err := db.NewStore(
     ctx,
     db.Sharded(
-        numVShards,
+        virtualShardCount,
         hasher,
         tenantResolver{},
         topologyOptions...,

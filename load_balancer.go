@@ -14,7 +14,7 @@ func newRoundRobin[T any](items []T) *roundRobin[T] {
 	}
 }
 
-func (r *roundRobin[T]) Next() T {
+func (r *roundRobin[T]) nextItem() T {
 	index := r.next.Add(1) - 1
 	return r.items[index%uint64(len(r.items))]
 }

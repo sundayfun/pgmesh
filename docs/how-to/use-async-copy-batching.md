@@ -8,7 +8,7 @@ flush APIs. For a query named `CopyAccounts`, pgmesh generates:
 | `CopyAccounts` | Route and execute the rows synchronously |
 | `CopyAccountsAsync` | Accept rows and return a `*pgmesh.Future[int64]` |
 | `FlushCopyAccounts` | Force partial batches to execute and wait at a barrier |
-| `WithCopyAccountsBatching` | Configure per-shard batch size, timeout, and COPY concurrency |
+| `WithCopyAccountsBatching` | Configure the per-shard row limit, linger window, and batch concurrency |
 
 The suffix always follows the sqlc query name, so `CopyEvents` generates
 `CopyEventsAsync`, `FlushCopyEvents`, and `WithCopyEventsBatching`.
@@ -33,9 +33,9 @@ store, err := db.NewStore(
     ctx,
     topology,
     db.WithCopyAccountsBatching(pgmesh.CopyBatchConfig{
-        BatchSize:           500,
-        FlushTimeout:        5 * time.Millisecond,
-        MaxConcurrentCopies: 8,
+        MaxRowsPerBatch:      500,
+        Linger:               5 * time.Millisecond,
+        MaxConcurrentBatches: 8,
     }),
 )
 if err != nil {
@@ -43,17 +43,20 @@ if err != nil {
 }
 ```
 
-`BatchSize` is the maximum number of rows in one physical COPY on one shard.
-When execution is backlogged, adjacent timeout-flushed batches are merged in
+`MaxRowsPerBatch` is the maximum number of rows in one physical COPY on one shard.
+When execution is backlogged, adjacent linger-expired batches are merged in
 FIFO order up to this size before a worker starts the physical COPY. Zero
-leaves timed and backlog-merged batches unbounded.
+leaves batches unbounded by row count.
 
-`MaxConcurrentCopies` limits physical COPY executions in flight for one
-generated query and physical shard. Zero uses
-`pgmesh.DefaultCopyBatchMaxConcurrentCopies`, currently 32. Set it to one when
-physical batches must execute serially. A zero `FlushTimeout` uses
-`pgmesh.DefaultCopyBatchFlushTimeout`; negative values make store construction
-fail.
+`Linger` is the maximum coalescing window after the first row is accepted.
+Full and manually flushed batches become ready sooner. Zero uses
+`pgmesh.DefaultCopyBatchLinger`, currently one millisecond.
+
+`MaxConcurrentBatches` limits physical COPY batches in flight for one generated
+query and physical shard. Queued batches do not count toward the limit. Zero uses
+`pgmesh.DefaultCopyBatchMaxConcurrentBatches`, currently 32. Set it to one when
+physical batches must execute serially. Negative values for any setting make
+store construction fail.
 
 ## Submit, flush, and await
 
@@ -118,8 +121,8 @@ if err := store.Accounts().FlushCopyAccounts(shutdownCtx); err != nil {
 ```
 
 Call the generated flush method for every `:copyfrom` query that may still have
-outstanding work. It is also useful in tests to avoid waiting for a batch
-timeout.
+outstanding work. It is also useful in tests to avoid waiting for a batch's
+linger window to expire.
 
 If the flush context expires, only that wait stops. Accepted database work
 continues, and a later `Await` or flush can observe its result. Similarly,
@@ -130,13 +133,13 @@ cancel the write.
 
 - Do not mutate submitted rows or referenced data until the future resolves.
 - Different physical shards batch and execute independently.
-- Up to `MaxConcurrentCopies` batches execute concurrently on each physical
+- Up to `MaxConcurrentBatches` batches execute concurrently on each physical
   shard. Their futures may resolve and their transactions may commit out of
   submission order; configure one when serial execution is required.
 - The connection pool and PostgreSQL must have capacity for that concurrency.
   A high value can move queueing into pool acquisition or increase WAL, index,
   and lock contention.
-- One submission may split across shards or `BatchSize` boundaries; its future
+- One submission may split across shards or `MaxRowsPerBatch` boundaries; its future
   resolves only after every fragment completes.
 - Without `WithCopyAccountsBatching`, `CopyAccountsAsync` remains asynchronous but each
   call uses an immediate physical COPY per targeted shard. Flush still acts as
@@ -148,17 +151,17 @@ cancel the write.
   future return a zero count even though earlier fragments committed.
 - Batching is in memory and does not limit the outstanding backlog. Await
   futures or enforce application-level admission control.
-- Backlog merging only combines timeout-flushed batches that are already
-  waiting. It never merges across immediate, explicit, or size-flush
-  boundaries and does not extend the configured flush timeout.
+- Backlog merging only combines linger-expired batches that are already
+  waiting. It never merges across unbatched, manual, or full-batch boundaries
+  and does not extend the configured linger window.
 
-## Observe explicit flushes
+## Observe manual flushes
 
 An explicit flush produces normal `pgmesh.query.physical.duration` points for
 the database executions. COPY metrics use
-`pgmesh.copy.batch.flush_reason="explicit"`; the
+`pgmesh.copy.batch.flush_reason="manual"`; the
 `pgmesh.copy.batch.flushes` counter and COPY duration/row histograms can be
-grouped by shard and node. `FlushCopyAccounts` itself is a control barrier and
+grouped by replica set and node. `FlushCopyAccounts` itself is a control barrier and
 does not add a separate logical-query duration point.
 
 See the runnable

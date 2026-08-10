@@ -101,24 +101,24 @@ func (h *Harness) newShardedStoreWithMirrors(
 		topologyOptions = append(
 			topologyOptions,
 			fixture.WithReplicaSet("shard0-mirror", h.pools["shard0-mirror"]),
-			fixture.WithVShardMapping("shard0", []uint64{0}, "shard0-mirror"),
+			fixture.WithVirtualShardMapping("shard0", []uint64{0}, "shard0-mirror"),
 		)
 	} else {
 		topologyOptions = append(
 			topologyOptions,
-			fixture.WithVShardMapping("shard0", []uint64{0}),
+			fixture.WithVirtualShardMapping("shard0", []uint64{0}),
 		)
 	}
 	topologyOptions = append(
 		topologyOptions,
-		fixture.WithVShardMapping("shard1", []uint64{1}),
+		fixture.WithVirtualShardMapping("shard1", []uint64{1}),
 	)
 
 	queries, err := fixture.NewStore(
 		t.Context(),
 		fixture.Sharded(
 			2,
-			pgmesh.ModularShardHashFor[uint64](2),
+			pgmesh.NewModuloShardHasher[uint64](2),
 			tenantResolver{},
 			topologyOptions...,
 		),

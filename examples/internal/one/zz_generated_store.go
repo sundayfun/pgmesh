@@ -232,12 +232,12 @@ func (c singletonTopology) buildStore(_ context.Context, options storeOptions) (
 		mirrors = append(mirrors, newStoreNode(database).Writer())
 	}
 	replicaSet = replicaSet.WithWriteMirrors(mirrors...)
-	mesh, err := pgmesh.NewBuilder[*readQueries, *queryStore, uint8](1).
-		WithHasher(pgmesh.ConstantShardHashFor[uint8](0)).
+	mesh, err := pgmesh.NewMeshBuilder[*readQueries, *queryStore, uint8](1).
+		WithShardHasher(pgmesh.NewConstantShardHasher[uint8](0)).
 		WithTracerProvider(options.tracerProvider).
 		WithMeterProvider(options.meterProvider).
 		WithLogger(options.logger).
-		Link(0, replicaSet).
+		MapVirtualShard(0, replicaSet).
 		Build()
 	if err != nil {
 		return nil, err

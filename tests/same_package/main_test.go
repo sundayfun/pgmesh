@@ -371,12 +371,12 @@ func buildTestStore(t *testing.T, primary, replica *fakeDB, mirrors ...*fakeDB) 
 			mirrorNames = append(mirrorNames, name)
 		}
 	}
-	options = append(options, WithVShardMapping("main", []uint64{0}, mirrorNames...))
+	options = append(options, WithVirtualShardMapping("main", []uint64{0}, mirrorNames...))
 	store, err := NewStore(
 		t.Context(),
 		Sharded(
 			1,
-			pgmesh.ConstantShardHashFor[uint64](0),
+			pgmesh.NewConstantShardHasher[uint64](0),
 			tenantResolver{},
 			options...,
 		),
@@ -403,10 +403,10 @@ func TestGeneratedStoreFactoriesWrapSelectedGroupsOnce(t *testing.T) {
 			create: func(primary *fakeDB) Topology {
 				return Sharded(
 					1,
-					pgmesh.ConstantShardHashFor[uint64](0),
+					pgmesh.NewConstantShardHasher[uint64](0),
 					tenantResolver{},
 					WithReplicaSet("main", primary),
-					WithVShardMapping("main", []uint64{0}),
+					WithVirtualShardMapping("main", []uint64{0}),
 				)
 			},
 		},
@@ -549,8 +549,8 @@ func buildTwoShardStore(
 	}
 	options = append(
 		options,
-		WithVShardMapping("shard-b", []uint64{0, 2}, mirrors...),
-		WithVShardMapping("shard-a", []uint64{1, 3}),
+		WithVirtualShardMapping("shard-b", []uint64{0, 2}, mirrors...),
+		WithVirtualShardMapping("shard-a", []uint64{1, 3}),
 	)
 	store, err := NewStore(
 		t.Context(),
@@ -567,7 +567,7 @@ func TestGeneratedAllShardsReadMergesInPhysicalOrder(t *testing.T) {
 	log := &callLog{}
 	store := buildTwoShardStore(
 		t,
-		pgmesh.ModularShardHashFor[uint64](4),
+		pgmesh.NewModuloShardHasher[uint64](4),
 		&fakeDB{name: "shard-b-primary", log: log, users: []*User{{ID: 200}}},
 		&fakeDB{name: "shard-b-replica", log: log, users: []*User{{ID: 20}}},
 		&fakeDB{name: "shard-a-primary", log: log, users: []*User{{ID: 100}}},
@@ -599,7 +599,7 @@ func TestGeneratedAllShardsAttemptsEveryTargetAndZerosFailures(t *testing.T) {
 	queryErr := errors.New("shard-b unavailable")
 	store := buildTwoShardStore(
 		t,
-		pgmesh.ModularShardHashFor[uint64](4),
+		pgmesh.NewModuloShardHasher[uint64](4),
 		&fakeDB{name: "shard-b-primary", log: log},
 		&fakeDB{name: "shard-b-replica", log: log, queryErr: queryErr},
 		&fakeDB{name: "shard-a-primary", log: log},
@@ -623,7 +623,7 @@ func TestGeneratedAllShardsWritesSumRowsAndRejectTransactions(t *testing.T) {
 	mirror := &fakeDB{name: "shard-b-mirror", log: log, rowsAffected: 2}
 	store := buildTwoShardStore(
 		t,
-		pgmesh.ModularShardHashFor[uint64](4),
+		pgmesh.NewModuloShardHasher[uint64](4),
 		shardB,
 		nil,
 		shardA,
@@ -672,7 +672,7 @@ func TestGeneratedGroupedManyPartitionsAndRestoresInputOrder(t *testing.T) {
 	shardAReplica := &fakeDB{name: "shard-a-replica", log: log, users: []*User{{ID: 21}, {ID: 20}}}
 	store := buildTwoShardStore(
 		t,
-		pgmesh.ModularShardHashFor[uint64](4),
+		pgmesh.NewModuloShardHasher[uint64](4),
 		shardBPrimary,
 		shardBReplica,
 		shardAPrimary,
@@ -714,7 +714,7 @@ func TestGeneratedGroupedManyPrimaryAndTransactionRouting(t *testing.T) {
 		shardAPrimary := &fakeDB{name: "shard-a-primary", log: log, users: []*User{{ID: 20}}}
 		store := buildTwoShardStore(
 			t,
-			pgmesh.ModularShardHashFor[uint64](4),
+			pgmesh.NewModuloShardHasher[uint64](4),
 			shardBPrimary,
 			&fakeDB{name: "shard-b-replica", log: log, users: []*User{{ID: 10}}},
 			shardAPrimary,
@@ -741,7 +741,7 @@ func TestGeneratedGroupedManyPrimaryAndTransactionRouting(t *testing.T) {
 		log := &callLog{}
 		store := buildTwoShardStore(
 			t,
-			pgmesh.ModularShardHashFor[uint64](4),
+			pgmesh.NewModuloShardHasher[uint64](4),
 			&fakeDB{name: "shard-b-primary", log: log, users: []*User{}},
 			nil,
 			&fakeDB{name: "shard-a-primary", log: log, users: []*User{}},
@@ -769,7 +769,7 @@ func TestGeneratedGroupedManyPrimaryAndTransactionRouting(t *testing.T) {
 		txDB := &fakeDB{name: "tx", log: log, users: []*User{{ID: 12}, {ID: 10}}}
 		store := buildTwoShardStore(
 			t,
-			pgmesh.ModularShardHashFor[uint64](4),
+			pgmesh.NewModuloShardHasher[uint64](4),
 			&fakeDB{name: "shard-b-primary", log: log, users: []*User{}},
 			nil,
 			&fakeDB{name: "shard-a-primary", log: log, users: []*User{}},
@@ -801,7 +801,7 @@ func TestGeneratedGroupedManyPreflightAndFailureBehavior(t *testing.T) {
 		log := &callLog{}
 		store := buildTwoShardStore(
 			t,
-			pgmesh.ModularShardHashFor[uint64](4),
+			pgmesh.NewModuloShardHasher[uint64](4),
 			&fakeDB{name: "shard-b-primary", log: log, users: []*User{}},
 			nil,
 			&fakeDB{name: "shard-a-primary", log: log, users: []*User{}},
@@ -821,7 +821,7 @@ func TestGeneratedGroupedManyPreflightAndFailureBehavior(t *testing.T) {
 		log := &callLog{}
 		store := buildTwoShardStore(
 			t,
-			pgmesh.ModularShardHashFor[uint64](4),
+			pgmesh.NewModuloShardHasher[uint64](4),
 			&fakeDB{name: "shard-b-primary", log: log, users: []*User{}},
 			nil,
 			&fakeDB{name: "shard-a-primary", log: log, users: []*User{}},
@@ -860,7 +860,7 @@ func TestGeneratedGroupedManyPreflightAndFailureBehavior(t *testing.T) {
 				{TenantKey: TenantKey{TenantID: 4}, ID: 11},
 			},
 		)
-		require.ErrorIs(t, err, pgmesh.ErrVShardOutOfRange)
+		require.ErrorIs(t, err, pgmesh.ErrVirtualShardOutOfRange)
 		require.ErrorContains(t, err, "input 1")
 		assert.Nil(t, users)
 		assert.Empty(t, log.snapshot())
@@ -873,7 +873,7 @@ func TestGeneratedGroupedManyPreflightAndFailureBehavior(t *testing.T) {
 		queryErr := errors.New("shard-b unavailable")
 		store := buildTwoShardStore(
 			t,
-			pgmesh.ModularShardHashFor[uint64](4),
+			pgmesh.NewModuloShardHasher[uint64](4),
 			&fakeDB{name: "shard-b-primary", log: log, users: []*User{}},
 			&fakeDB{name: "shard-b-replica", log: log, queryErr: queryErr},
 			&fakeDB{name: "shard-a-primary", log: log, users: []*User{}},
@@ -900,7 +900,7 @@ func TestGeneratedGroupedManyPreflightAndFailureBehavior(t *testing.T) {
 		log := &callLog{}
 		store := buildTwoShardStore(
 			t,
-			pgmesh.ModularShardHashFor[uint64](4),
+			pgmesh.NewModuloShardHasher[uint64](4),
 			&fakeDB{name: "shard-b-primary", log: log, users: []*User{}},
 			&fakeDB{name: "shard-b-replica", log: log, users: []*User{{ID: 999}}, ignoreIDs: true},
 			&fakeDB{name: "shard-a-primary", log: log, users: []*User{}},
@@ -927,7 +927,7 @@ func TestGeneratedGroupedCopyPartitionsByPhysicalShard(t *testing.T) {
 	mirror := &fakeDB{name: "shard-b-mirror", log: log}
 	store := buildTwoShardStore(
 		t,
-		pgmesh.ModularShardHashFor[uint64](4),
+		pgmesh.NewModuloShardHasher[uint64](4),
 		shardB,
 		nil,
 		shardA,
@@ -980,7 +980,7 @@ func TestGeneratedGroupedCopyPreflightsRoutesAndTransactions(t *testing.T) {
 			{TenantKey: TenantKey{TenantID: 0}, ID: 10},
 			{TenantKey: TenantKey{TenantID: 4}, ID: 11},
 		})
-		require.ErrorIs(t, err, pgmesh.ErrVShardOutOfRange)
+		require.ErrorIs(t, err, pgmesh.ErrVirtualShardOutOfRange)
 		require.ErrorContains(t, err, "input 1")
 		assert.Zero(t, count)
 		assert.Empty(t, log.snapshot())
@@ -992,7 +992,7 @@ func TestGeneratedGroupedCopyPreflightsRoutesAndTransactions(t *testing.T) {
 		log := &callLog{}
 		store := buildTwoShardStore(
 			t,
-			pgmesh.ModularShardHashFor[uint64](4),
+			pgmesh.NewModuloShardHasher[uint64](4),
 			&fakeDB{name: "shard-b-primary", log: log},
 			nil,
 			&fakeDB{name: "shard-a-primary", log: log},
@@ -1022,7 +1022,7 @@ func TestGeneratedGroupedCopyPreflightsRoutesAndTransactions(t *testing.T) {
 		mirror := &fakeDB{name: "shard-b-mirror", log: log}
 		store := buildTwoShardStore(
 			t,
-			pgmesh.ModularShardHashFor[uint64](4),
+			pgmesh.NewModuloShardHasher[uint64](4),
 			primary,
 			nil,
 			&fakeDB{name: "shard-a-primary", log: log},
@@ -1053,7 +1053,7 @@ func TestGeneratedGroupedCopyPreflightsRoutesAndTransactions(t *testing.T) {
 		log := &callLog{}
 		store := buildTwoShardStore(
 			t,
-			pgmesh.ModularShardHashFor[uint64](4),
+			pgmesh.NewModuloShardHasher[uint64](4),
 			&fakeDB{name: "shard-b-primary", log: log},
 			nil,
 			&fakeDB{name: "shard-a-primary", log: log},
@@ -1075,7 +1075,7 @@ func TestGeneratedGroupedCopyAttemptsEveryGroupAndZerosFailures(t *testing.T) {
 	copyErr := errors.New("shard-b copy failed")
 	store := buildTwoShardStore(
 		t,
-		pgmesh.ModularShardHashFor[uint64](4),
+		pgmesh.NewModuloShardHasher[uint64](4),
 		&fakeDB{name: "shard-b-primary", log: log, copyErr: copyErr},
 		nil,
 		&fakeDB{name: "shard-a-primary", log: log},
@@ -1101,15 +1101,15 @@ func TestGeneratedAsyncCopyCoalescesConcurrentCallersPerPhysicalShard(t *testing
 	mirror := &fakeDB{name: "shard-b-mirror", log: log}
 	store := buildTwoShardStore(
 		t,
-		pgmesh.ModularShardHashFor[uint64](4),
+		pgmesh.NewModuloShardHasher[uint64](4),
 		primary,
 		nil,
 		&fakeDB{name: "shard-a-primary", log: log},
 		nil,
 		mirror,
 		WithCopyUsersBatching(pgmesh.CopyBatchConfig{
-			BatchSize:    8,
-			FlushTimeout: time.Hour,
+			MaxRowsPerBatch: 8,
+			Linger:          time.Hour,
 		}),
 	)
 
@@ -1146,16 +1146,16 @@ func TestGeneratedAsyncCopyPartitionsAndSplitsSubmissions(t *testing.T) {
 	shardA := &fakeDB{name: "shard-a-primary", log: log}
 	store := buildTwoShardStore(
 		t,
-		pgmesh.ModularShardHashFor[uint64](4),
+		pgmesh.NewModuloShardHasher[uint64](4),
 		shardB,
 		nil,
 		shardA,
 		nil,
 		nil,
 		WithCopyUsersBatching(pgmesh.CopyBatchConfig{
-			BatchSize:           2,
-			FlushTimeout:        time.Hour,
-			MaxConcurrentCopies: 1,
+			MaxRowsPerBatch:      2,
+			Linger:               time.Hour,
+			MaxConcurrentBatches: 1,
 		}),
 	)
 
@@ -1188,7 +1188,7 @@ func TestGeneratedAsyncCopyImmediateFallbackAndCancellation(t *testing.T) {
 	primary := &fakeDB{name: "shard-b-primary", log: log}
 	store := buildTwoShardStore(
 		t,
-		pgmesh.ModularShardHashFor[uint64](4),
+		pgmesh.NewModuloShardHasher[uint64](4),
 		primary,
 		nil,
 		&fakeDB{name: "shard-a-primary", log: log},
@@ -1212,13 +1212,13 @@ func TestGeneratedAsyncCopyImmediateFallbackAndCancellation(t *testing.T) {
 	batchedPrimary := &fakeDB{name: "batched-primary", log: log}
 	batched := buildTwoShardStore(
 		t,
-		pgmesh.ModularShardHashFor[uint64](4),
+		pgmesh.NewModuloShardHasher[uint64](4),
 		batchedPrimary,
 		nil,
 		&fakeDB{name: "batched-shard-a", log: log},
 		nil,
 		nil,
-		WithCopyUsersBatching(pgmesh.CopyBatchConfig{FlushTimeout: time.Hour}),
+		WithCopyUsersBatching(pgmesh.CopyBatchConfig{Linger: time.Hour}),
 	)
 	pending := batched.Users().CopyUsersAsync(t.Context(), []*CopyUsersT{{
 		TenantKey: TenantKey{TenantID: 0}, ID: 20,
@@ -1258,7 +1258,7 @@ func TestGeneratedAsyncCopyPreflightAndSharedFailures(t *testing.T) {
 			{TenantKey: TenantKey{TenantID: 4}, ID: 14},
 		})
 		count, err := future.Await(t.Context())
-		require.ErrorIs(t, err, pgmesh.ErrVShardOutOfRange)
+		require.ErrorIs(t, err, pgmesh.ErrVirtualShardOutOfRange)
 		require.ErrorContains(t, err, "input 1")
 		assert.Zero(t, count)
 		assert.Zero(t, primary.copyCallCount())
@@ -1272,13 +1272,13 @@ func TestGeneratedAsyncCopyPreflightAndSharedFailures(t *testing.T) {
 		primary := &fakeDB{name: "shard-b-primary", log: log, copyErr: copyErr}
 		store := buildTwoShardStore(
 			t,
-			pgmesh.ModularShardHashFor[uint64](4),
+			pgmesh.NewModuloShardHasher[uint64](4),
 			primary,
 			nil,
 			&fakeDB{name: "shard-a-primary", log: log},
 			nil,
 			nil,
-			WithCopyUsersBatching(pgmesh.CopyBatchConfig{BatchSize: 2}),
+			WithCopyUsersBatching(pgmesh.CopyBatchConfig{MaxRowsPerBatch: 2}),
 		)
 
 		first := store.Users().CopyUsersAsync(t.Context(), []*CopyUsersT{{
@@ -1304,7 +1304,7 @@ func TestGeneratedCopyBatchConfigValidation(t *testing.T) {
 	_, err := NewStore(
 		t.Context(),
 		Singleton(&fakeDB{name: "primary", log: log}),
-		WithCopyUsersBatching(pgmesh.CopyBatchConfig{BatchSize: -1}),
+		WithCopyUsersBatching(pgmesh.CopyBatchConfig{MaxRowsPerBatch: -1}),
 	)
 	require.ErrorContains(t, err, "configure CopyUsers copy batching")
 	require.ErrorContains(t, err, "must not be negative")
@@ -1325,7 +1325,7 @@ func TestGeneratedAsyncCopyTelemetryEndsWhenFutureResolves(t *testing.T) {
 		Singleton(&fakeDB{name: "primary", log: log}),
 		WithTracerProvider(tracerProvider),
 		WithMeterProvider(meterProvider),
-		WithCopyUsersBatching(pgmesh.CopyBatchConfig{FlushTimeout: time.Hour}),
+		WithCopyUsersBatching(pgmesh.CopyBatchConfig{Linger: time.Hour}),
 	)
 	require.NoError(t, err)
 
@@ -1345,7 +1345,7 @@ func TestGeneratedAsyncCopyTelemetryEndsWhenFutureResolves(t *testing.T) {
 	for _, item := range spans[0].Attributes() {
 		attributes[item.Key] = item.Value
 	}
-	assert.Equal(t, "default", attributes[attribute.Key(pgmesh.AttributeShardName)].AsString())
+	assert.Equal(t, "default", attributes[attribute.Key(pgmesh.AttributeReplicaSetName)].AsString())
 	assert.Equal(t, "primary", attributes[attribute.Key(pgmesh.AttributeNodeName)].AsString())
 	assert.Equal(t, "primary", attributes[attribute.Key(pgmesh.AttributeRouteMode)].AsString())
 	assert.Equal(t, "pgmesh.query.logical.Users.CopyUsersAsync", spans[1].Name())
@@ -1359,13 +1359,13 @@ func TestGeneratedAsyncCopyTelemetryEndsWhenFutureResolves(t *testing.T) {
 	batchAttributes := telemetryAttributeMap(rows.DataPoints[0].Attributes.ToSlice())
 	assert.Equal(t, "Users", batchAttributes[pgmesh.AttributeStoreName].AsString())
 	assert.Equal(t, "CopyUsers", batchAttributes[pgmesh.AttributeQueryName].AsString())
-	assert.Equal(t, "default", batchAttributes[pgmesh.AttributeShardName].AsString())
+	assert.Equal(t, "default", batchAttributes[pgmesh.AttributeReplicaSetName].AsString())
 	assert.Equal(t, "primary", batchAttributes[pgmesh.AttributeNodeName].AsString())
 	assert.Equal(t, "primary", batchAttributes[pgmesh.AttributeNodeRole].AsString())
 	assert.Equal(t, "primary", batchAttributes[pgmesh.AttributeRouteMode].AsString())
 	assert.Equal(
 		t,
-		string(pgmesh.CopyBatchFlushReasonExplicit),
+		string(pgmesh.CopyBatchFlushReasonManual),
 		batchAttributes[pgmesh.AttributeCopyBatchFlushReason].AsString(),
 	)
 
@@ -1378,7 +1378,7 @@ func TestGeneratedAsyncCopyTelemetryEndsWhenFutureResolves(t *testing.T) {
 	copyDuration := telemetryHistogram(t, metrics, pgmesh.MetricCopyBatchDuration)
 	require.Len(t, copyDuration.DataPoints, 1)
 	assert.Equal(t, uint64(1), copyDuration.DataPoints[0].Count)
-	queueDuration := telemetryHistogram(t, metrics, pgmesh.MetricCopyQueueDuration)
+	queueDuration := telemetryHistogram(t, metrics, pgmesh.MetricCopyBatchQueueDuration)
 	require.Len(t, queueDuration.DataPoints, 1)
 	assert.Equal(t, uint64(1), queueDuration.DataPoints[0].Count)
 }
@@ -1392,14 +1392,14 @@ func TestGeneratedRoutingOnlyShardArgument(t *testing.T) {
 		t.Context(),
 		Sharded(
 			1,
-			pgmesh.ConstantShardHashFor[uint64](0),
+			pgmesh.NewConstantShardHasher[uint64](0),
 			recordingTenantResolver{tenantID: &resolvedTenantID},
 			WithReplicaSet(
 				"main",
 				&fakeDB{name: "primary", log: log},
 				&fakeDB{name: "replica", log: log},
 			),
-			WithVShardMapping("main", []uint64{0}),
+			WithVirtualShardMapping("main", []uint64{0}),
 		),
 	)
 	require.NoError(t, err)
@@ -1427,14 +1427,14 @@ func TestGeneratedP2PShardArgumentUsesMessageModel(t *testing.T) {
 		t.Context(),
 		Sharded(
 			1,
-			pgmesh.ConstantShardHashFor[uint64](0),
+			pgmesh.NewConstantShardHasher[uint64](0),
 			resolver,
 			WithReplicaSet(
 				"main",
 				&fakeDB{name: "primary", log: log},
 				&fakeDB{name: "replica", log: log},
 			),
-			WithVShardMapping("main", []uint64{0}),
+			WithVirtualShardMapping("main", []uint64{0}),
 		),
 	)
 	require.NoError(t, err)
@@ -1467,7 +1467,7 @@ func TestGeneratedTopologyOptionsCloneInputs(t *testing.T) {
 	vshards := []uint64{0}
 	mirrorNames := []string{"mirror"}
 	replicaSetOption := WithReplicaSet("main", primary, replicas...)
-	mappingOption := WithVShardMapping("main", vshards, mirrorNames...)
+	mappingOption := WithVirtualShardMapping("main", vshards, mirrorNames...)
 
 	replicas[0] = nil
 	vshards[0] = 1
@@ -1477,7 +1477,7 @@ func TestGeneratedTopologyOptionsCloneInputs(t *testing.T) {
 		t.Context(),
 		Sharded(
 			1,
-			pgmesh.ConstantShardHashFor[uint64](0),
+			pgmesh.NewConstantShardHasher[uint64](0),
 			tenantResolver{},
 			replicaSetOption,
 			WithReplicaSet("mirror", mirror),
@@ -1511,7 +1511,7 @@ func TestGeneratedStoreTelemetryWiring(t *testing.T) {
 		t.Context(),
 		Sharded(
 			1,
-			pgmesh.ConstantShardHashFor[uint64](0),
+			pgmesh.NewConstantShardHasher[uint64](0),
 			tenantResolver{},
 			WithReplicaSet(
 				"main",
@@ -1519,7 +1519,7 @@ func TestGeneratedStoreTelemetryWiring(t *testing.T) {
 				&fakeDB{name: "replica", log: callLog},
 			),
 			WithReplicaSet("mirror", &fakeDB{name: "mirror", log: callLog, rowErr: mirrorErr}),
-			WithVShardMapping("main", []uint64{0}, "mirror"),
+			WithVirtualShardMapping("main", []uint64{0}, "mirror"),
 		),
 		WithTracerProvider(tracerProvider),
 		WithMeterProvider(meterProvider),
@@ -1576,8 +1576,8 @@ func TestGeneratedStoreTelemetryWiring(t *testing.T) {
 		assert.Equal(t, "Users", attributes[pgmesh.AttributeStoreName].AsString())
 		assert.Equal(t, expected.query, attributes[pgmesh.AttributeQueryName].AsString())
 		assert.Equal(t, expected.kind, attributes[pgmesh.AttributeQueryKind].AsString())
-		assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeWrapperDelegated))
-		assert.Equal(t, "main", attributes[pgmesh.AttributeShardName].AsString())
+		assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeStoreDelegated))
+		assert.Equal(t, "main", attributes[pgmesh.AttributeReplicaSetName].AsString())
 		assert.Equal(t, expected.node, attributes[pgmesh.AttributeNodeName].AsString())
 		assert.Equal(t, expected.role, attributes[pgmesh.AttributeNodeRole].AsString())
 		assert.Equal(t, expected.mode, attributes[pgmesh.AttributeRouteMode].AsString())
@@ -1585,7 +1585,7 @@ func TestGeneratedStoreTelemetryWiring(t *testing.T) {
 		assert.Equal(t, "pgmesh.query.logical.Users."+expected.query, operation.Name())
 		operationAttributes := telemetryAttributeMap(operation.Attributes())
 		assert.Equal(t, "single", operationAttributes[pgmesh.AttributeRouteScope].AsString())
-		assert.NotContains(t, operationAttributes, attribute.Key(pgmesh.AttributeShardName))
+		assert.NotContains(t, operationAttributes, attribute.Key(pgmesh.AttributeReplicaSetName))
 		assert.Equal(t, expected.status, operation.Status().Code)
 	}
 
@@ -1593,23 +1593,23 @@ func TestGeneratedStoreTelemetryWiring(t *testing.T) {
 	require.NoError(t, reader.Collect(t.Context(), &metrics))
 	require.Len(t, metrics.ScopeMetrics, 1)
 	require.Len(t, metrics.ScopeMetrics[0].Metrics, 3)
-	histogram := telemetryHistogram(t, metrics, pgmesh.MetricQueryPhysicalDuration)
+	histogram := telemetryHistogram(t, metrics, pgmesh.MetricPhysicalQueryDuration)
 	require.Len(t, histogram.DataPoints, len(expectedSpans))
 	var measurementCount uint64
 	for _, point := range histogram.DataPoints {
 		measurementCount += point.Count
 		attributes := telemetryAttributeMap(point.Attributes.ToSlice())
 		assert.Equal(t, "Users", attributes[pgmesh.AttributeStoreName].AsString())
-		assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeWrapperDelegated))
+		assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeStoreDelegated))
 	}
 	assert.Equal(t, uint64(len(expectedSpans)), measurementCount)
-	operationHistogram := telemetryHistogram(t, metrics, pgmesh.MetricQueryLogicalDuration)
+	operationHistogram := telemetryHistogram(t, metrics, pgmesh.MetricLogicalQueryDuration)
 	var operationCount uint64
 	for _, point := range operationHistogram.DataPoints {
 		operationCount += point.Count
 		attributes := telemetryAttributeMap(point.Attributes.ToSlice())
 		assert.Equal(t, "single", attributes[pgmesh.AttributeRouteScope].AsString())
-		assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeShardName))
+		assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeReplicaSetName))
 	}
 	assert.Equal(t, uint64(len(expectedSpans)), operationCount)
 
@@ -1645,7 +1645,7 @@ func TestGeneratedFanoutTelemetryRecordsEveryShardAndReplica(t *testing.T) {
 		t.Context(),
 		Sharded(
 			2,
-			pgmesh.ModularShardHashFor[uint64](2),
+			pgmesh.NewModuloShardHasher[uint64](2),
 			tenantResolver{},
 			WithReplicaSet(
 				"shard-0",
@@ -1657,8 +1657,8 @@ func TestGeneratedFanoutTelemetryRecordsEveryShardAndReplica(t *testing.T) {
 				&fakeDB{name: "primary-1", log: callLog},
 				&fakeDB{name: "replica-1", log: callLog, users: []*User{}},
 			),
-			WithVShardMapping("shard-0", []uint64{0}),
-			WithVShardMapping("shard-1", []uint64{1}),
+			WithVirtualShardMapping("shard-0", []uint64{0}),
+			WithVirtualShardMapping("shard-1", []uint64{1}),
 		),
 		WithTracerProvider(tracerProvider),
 		WithMeterProvider(meterProvider),
@@ -1674,32 +1674,32 @@ func TestGeneratedFanoutTelemetryRecordsEveryShardAndReplica(t *testing.T) {
 	for _, span := range spans[:2] {
 		assert.Equal(t, "pgmesh.query.physical.Users.ListAllUsers", span.Name())
 		attributes := telemetryAttributeMap(span.Attributes())
-		shardName := attributes[pgmesh.AttributeShardName].AsString()
+		shardName := attributes[pgmesh.AttributeReplicaSetName].AsString()
 		physicalTargets[shardName] = attributes[pgmesh.AttributeNodeName].AsString()
 		assert.Equal(t, "read_replica", attributes[pgmesh.AttributeNodeRole].AsString())
-		assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeVirtualShard))
+		assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeVirtualShardIndex))
 	}
 	assert.Equal(t, map[string]string{"shard-0": "replica-0", "shard-1": "replica-0"}, physicalTargets)
 	operation := spans[2]
 	assert.Equal(t, "pgmesh.query.logical.Users.ListAllUsers", operation.Name())
 	operationAttributes := telemetryAttributeMap(operation.Attributes())
 	assert.Equal(t, "fanout", operationAttributes[pgmesh.AttributeRouteScope].AsString())
-	assert.Equal(t, int64(2), operationAttributes[pgmesh.AttributeRouteShardCount].AsInt64())
-	assert.NotContains(t, operationAttributes, attribute.Key(pgmesh.AttributeShardName))
+	assert.Equal(t, int64(2), operationAttributes[pgmesh.AttributeRouteReplicaSetCount].AsInt64())
+	assert.NotContains(t, operationAttributes, attribute.Key(pgmesh.AttributeReplicaSetName))
 
 	var metrics metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(t.Context(), &metrics))
-	queryHistogram := telemetryHistogram(t, metrics, pgmesh.MetricQueryPhysicalDuration)
+	queryHistogram := telemetryHistogram(t, metrics, pgmesh.MetricPhysicalQueryDuration)
 	require.Len(t, queryHistogram.DataPoints, 2)
 	metricTargets := make(map[string]string, 2)
 	for _, point := range queryHistogram.DataPoints {
 		attributes := telemetryAttributeMap(point.Attributes.ToSlice())
-		shardName := attributes[pgmesh.AttributeShardName].AsString()
+		shardName := attributes[pgmesh.AttributeReplicaSetName].AsString()
 		metricTargets[shardName] = attributes[pgmesh.AttributeNodeName].AsString()
-		assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeVirtualShard))
+		assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeVirtualShardIndex))
 	}
 	assert.Equal(t, physicalTargets, metricTargets)
-	operationHistogram := telemetryHistogram(t, metrics, pgmesh.MetricQueryLogicalDuration)
+	operationHistogram := telemetryHistogram(t, metrics, pgmesh.MetricLogicalQueryDuration)
 	require.Len(t, operationHistogram.DataPoints, 1)
 	assert.Equal(t, uint64(1), operationHistogram.DataPoints[0].Count)
 }
@@ -1742,28 +1742,28 @@ func TestGeneratedStoreFactoryTelemetrySeparatesCacheAndInternalQuerySignals(t *
 
 	spans := recorder.Ended()
 	require.Len(t, spans, 4)
-	assert.Equal(t, "pgmesh.query.wrapper.Users.ListAllUsers", spans[0].Name())
+	assert.Equal(t, "pgmesh.query.store.Users.ListAllUsers", spans[0].Name())
 	hitAttributes := telemetryAttributeMap(spans[0].Attributes())
 	assert.Equal(t, "ListAllUsers", hitAttributes[pgmesh.AttributeQueryName].AsString())
-	assert.False(t, hitAttributes[pgmesh.AttributeWrapperDelegated].AsBool())
-	assert.NotContains(t, hitAttributes, attribute.Key(pgmesh.AttributeShardName))
+	assert.False(t, hitAttributes[pgmesh.AttributeStoreDelegated].AsBool())
+	assert.NotContains(t, hitAttributes, attribute.Key(pgmesh.AttributeReplicaSetName))
 	assert.NotContains(t, hitAttributes, attribute.Key(pgmesh.AttributeRouteMode))
 	assert.Equal(t, "pgmesh.query.physical.Users.GetUser", spans[1].Name())
 	queryAttributes := telemetryAttributeMap(spans[1].Attributes())
 	assert.Equal(t, "GetUser", queryAttributes[pgmesh.AttributeQueryName].AsString())
-	assert.NotContains(t, queryAttributes, attribute.Key(pgmesh.AttributeWrapperDelegated))
-	assert.Equal(t, "default", queryAttributes[pgmesh.AttributeShardName].AsString())
+	assert.NotContains(t, queryAttributes, attribute.Key(pgmesh.AttributeStoreDelegated))
+	assert.Equal(t, "default", queryAttributes[pgmesh.AttributeReplicaSetName].AsString())
 	assert.Equal(t, "primary", queryAttributes[pgmesh.AttributeNodeName].AsString())
 	assert.Equal(t, "read", queryAttributes[pgmesh.AttributeRouteMode].AsString())
 	assert.Equal(t, "pgmesh.query.logical.Users.GetUser", spans[2].Name())
 	operationAttributes := telemetryAttributeMap(spans[2].Attributes())
 	assert.Equal(t, "single", operationAttributes[pgmesh.AttributeRouteScope].AsString())
-	assert.NotContains(t, operationAttributes, attribute.Key(pgmesh.AttributeShardName))
-	assert.Equal(t, "pgmesh.query.wrapper.Users.GetUser", spans[3].Name())
+	assert.NotContains(t, operationAttributes, attribute.Key(pgmesh.AttributeReplicaSetName))
+	assert.Equal(t, "pgmesh.query.store.Users.GetUser", spans[3].Name())
 	missAttributes := telemetryAttributeMap(spans[3].Attributes())
 	assert.Equal(t, "GetUser", missAttributes[pgmesh.AttributeQueryName].AsString())
-	assert.True(t, missAttributes[pgmesh.AttributeWrapperDelegated].AsBool())
-	assert.NotContains(t, missAttributes, attribute.Key(pgmesh.AttributeShardName))
+	assert.True(t, missAttributes[pgmesh.AttributeStoreDelegated].AsBool())
+	assert.NotContains(t, missAttributes, attribute.Key(pgmesh.AttributeReplicaSetName))
 	assert.NotContains(t, missAttributes, attribute.Key(pgmesh.AttributeRouteMode))
 	assert.Equal(t, spans[3].SpanContext().SpanID(), spans[2].Parent().SpanID())
 	assert.Equal(t, spans[2].SpanContext().SpanID(), spans[1].Parent().SpanID())
@@ -1772,22 +1772,22 @@ func TestGeneratedStoreFactoryTelemetrySeparatesCacheAndInternalQuerySignals(t *
 	require.NoError(t, reader.Collect(t.Context(), &metrics))
 	require.Len(t, metrics.ScopeMetrics, 1)
 	require.Len(t, metrics.ScopeMetrics[0].Metrics, 4)
-	storeHistogram := telemetryHistogram(t, metrics, pgmesh.MetricQueryWrapperDuration)
+	storeHistogram := telemetryHistogram(t, metrics, pgmesh.MetricStoreQueryDuration)
 	require.Len(t, storeHistogram.DataPoints, 2)
 	metricExecutions := make(map[string]bool, 2)
 	for _, point := range storeHistogram.DataPoints {
 		attributes := telemetryAttributeMap(point.Attributes.ToSlice())
-		metricExecutions[attributes[pgmesh.AttributeQueryName].AsString()] = attributes[pgmesh.AttributeWrapperDelegated].AsBool()
+		metricExecutions[attributes[pgmesh.AttributeQueryName].AsString()] = attributes[pgmesh.AttributeStoreDelegated].AsBool()
 	}
 	assert.Equal(t, map[string]bool{"ListAllUsers": false, "GetUser": true}, metricExecutions)
-	queryHistogram := telemetryHistogram(t, metrics, pgmesh.MetricQueryPhysicalDuration)
+	queryHistogram := telemetryHistogram(t, metrics, pgmesh.MetricPhysicalQueryDuration)
 	require.Len(t, queryHistogram.DataPoints, 1)
 	queryMetricAttributes := telemetryAttributeMap(queryHistogram.DataPoints[0].Attributes.ToSlice())
 	assert.Equal(t, "GetUser", queryMetricAttributes[pgmesh.AttributeQueryName].AsString())
-	assert.Equal(t, "default", queryMetricAttributes[pgmesh.AttributeShardName].AsString())
+	assert.Equal(t, "default", queryMetricAttributes[pgmesh.AttributeReplicaSetName].AsString())
 	assert.Equal(t, "primary", queryMetricAttributes[pgmesh.AttributeNodeName].AsString())
-	assert.NotContains(t, queryMetricAttributes, attribute.Key(pgmesh.AttributeWrapperDelegated))
-	operationHistogram := telemetryHistogram(t, metrics, pgmesh.MetricQueryLogicalDuration)
+	assert.NotContains(t, queryMetricAttributes, attribute.Key(pgmesh.AttributeStoreDelegated))
+	operationHistogram := telemetryHistogram(t, metrics, pgmesh.MetricLogicalQueryDuration)
 	require.Len(t, operationHistogram.DataPoints, 1)
 	operationMetricAttributes := telemetryAttributeMap(operationHistogram.DataPoints[0].Attributes.ToSlice())
 	assert.Equal(t, "GetUser", operationMetricAttributes[pgmesh.AttributeQueryName].AsString())
@@ -1797,20 +1797,20 @@ func TestGeneratedStoreFactoryTelemetrySeparatesCacheAndInternalQuerySignals(t *
 	require.Len(t, logLines, 4)
 	var hitLog map[string]any
 	require.NoError(t, json.Unmarshal([]byte(logLines[0]), &hitLog))
-	assert.Equal(t, "pgmesh query wrapper completed", hitLog["msg"])
-	assert.Equal(t, false, hitLog["wrapper_delegated"])
+	assert.Equal(t, "pgmesh store query completed", hitLog["msg"])
+	assert.Equal(t, false, hitLog["store_delegated"])
 	var queryLog map[string]any
 	require.NoError(t, json.Unmarshal([]byte(logLines[1]), &queryLog))
 	assert.Equal(t, "pgmesh physical query completed", queryLog["msg"])
-	assert.Equal(t, "default", queryLog["shard"])
-	assert.NotContains(t, queryLog, "wrapper_delegated")
+	assert.Equal(t, "default", queryLog["replica_set"])
+	assert.NotContains(t, queryLog, "store_delegated")
 	var operationLog map[string]any
 	require.NoError(t, json.Unmarshal([]byte(logLines[2]), &operationLog))
 	assert.Equal(t, "pgmesh logical query completed", operationLog["msg"])
 	var missLog map[string]any
 	require.NoError(t, json.Unmarshal([]byte(logLines[3]), &missLog))
-	assert.Equal(t, "pgmesh query wrapper completed", missLog["msg"])
-	assert.Equal(t, true, missLog["wrapper_delegated"])
+	assert.Equal(t, "pgmesh store query completed", missLog["msg"])
+	assert.Equal(t, true, missLog["store_delegated"])
 	assert.NotContains(t, missLog, "replica_set")
 }
 
@@ -2072,7 +2072,7 @@ func TestGeneratedStoreBehavior(t *testing.T) {
 					t.Context(),
 					Sharded(
 						1,
-						pgmesh.ConstantShardHashFor[uint64](0),
+						pgmesh.NewConstantShardHasher[uint64](0),
 						tenantResolver{},
 						nil,
 					),
@@ -2083,10 +2083,10 @@ func TestGeneratedStoreBehavior(t *testing.T) {
 					t.Context(),
 					Sharded(
 						1,
-						pgmesh.ConstantShardHashFor[uint64](0),
+						pgmesh.NewConstantShardHasher[uint64](0),
 						tenantResolver{},
 						WithReplicaSet("main", nil),
-						WithVShardMapping("main", []uint64{0}),
+						WithVirtualShardMapping("main", []uint64{0}),
 					),
 				)
 				require.ErrorContains(t, err, "database node")

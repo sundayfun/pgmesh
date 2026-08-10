@@ -124,7 +124,7 @@ The stable default public surface is:
 | `With<Group>Factory(func(<Group>) <Group>)` | Optional per-group wrapper factory |
 | `NewStore(ctx, topology, ...StoreOption)` | Store constructor, group factories, and common telemetry options |
 | `Singleton(primary, ...SingletonOption)` | Single-primary topology with optional replicas and mirrors |
-| `Sharded(numVShards, hasher, resolver, ...ShardedOption)` | Sharded topology, emitted for routed stores |
+| `Sharded(virtualShardCount, hasher, resolver, ...ShardedOption)` | Sharded topology, emitted for routed stores |
 | `<Route>` | Shared shard-key struct generated from `shard: route(operand, ...)` |
 | `ReadFromPrimary`, `WithTx` | Per-query routing options |
 
@@ -132,8 +132,8 @@ Repeated topology options append in call order. Common scalar store options,
 such as `WithLogger` and `With<Group>Factory`, use the last supplied value.
 Group factories run once after successful topology construction, and a nil
 factory leaves that group unwrapped. A configured group is retained behind a
-generated telemetry facade that records `pgmesh.query.wrapper.duration`, emits a
-`pgmesh.query.wrapper.*` span, and reports `pgmesh.wrapper.delegated`.
+generated telemetry facade that records `pgmesh.query.store.duration`, emits a
+`pgmesh.query.store.*` span, and reports `pgmesh.store.delegated`.
 Option constructors clone slice inputs, and `NewStore` reports nil topology,
 singleton, sharded, or store options as configuration errors.
 

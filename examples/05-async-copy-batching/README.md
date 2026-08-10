@@ -4,7 +4,7 @@ This example configures the generated `CopyAccounts :copyfrom` query for
 per-shard micro-batching. Two submissions target `shard-0` and coalesce into
 one physical COPY; a third targets `shard-1` and executes independently.
 
-The one-hour batch timeout is intentional: the program demonstrates the full
+The one-hour linger window is intentional: the program demonstrates the full
 `CopyAccountsAsync` → `FlushCopyAccounts` → `Future.Await` lifecycle without
 depending on a timer. `FlushCopyAccounts` forces every partial batch accepted
 before its barrier to execute across both physical shards.

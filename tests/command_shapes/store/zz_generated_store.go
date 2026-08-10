@@ -204,17 +204,17 @@ func (q *meshStore[SK]) initializeCopyBatchers(options storeOptions) error {
 		enabled:  copyCommandUsersBatchEnabled,
 		batchers: make(map[string]*pgmesh.CopyBatcher[*db.CopyCommandUsersParams]),
 	}
-	for _, shard := range q.mesh.AllShards() {
-		route := shard.WriteRoute()
+	for _, replicaSet := range q.mesh.ReplicaSets() {
+		route := replicaSet.WriteRoute()
 		batcher, err := pgmesh.NewCopyBatcher[*db.CopyCommandUsersParams](copyCommandUsersBatchConfig, func(ctx context.Context, rows []*db.CopyCommandUsersParams) (count int64, queryErr error) {
-			queryCtx, physicalQuerySpan := q.mesh.StartQuerySpan(ctx, "Commands", "CopyCommandUsers", pgmesh.QueryKindWrite, route.Metadata().WithoutVirtualShard(), pgmesh.RouteModePrimary)
+			queryCtx, physicalQuerySpan := q.mesh.StartPhysicalQuerySpan(ctx, "Commands", "CopyCommandUsers", pgmesh.QueryKindWrite, route.Metadata(), pgmesh.RouteModePrimary)
 			defer func() { physicalQuerySpan.End(queryErr) }()
 			return route.Target.CopyCommandUsers(queryCtx, rows)
-		}, q.mesh.CopyBatchObserver("Commands", "CopyCommandUsers", route.Metadata()))
+		}, q.mesh.NewCopyBatchObserver("Commands", "CopyCommandUsers", route.Metadata()))
 		if err != nil {
 			return fmt.Errorf("configure CopyCommandUsers copy batching: %w", err)
 		}
-		copyCommandUsersBatch.batchers[shard.Name()] = batcher
+		copyCommandUsersBatch.batchers[replicaSet.Name()] = batcher
 	}
 	q.copyCommandUsersBatch = copyCommandUsersBatch
 	return nil
@@ -264,12 +264,12 @@ func (c singletonTopology) buildStore(_ context.Context, options storeOptions) (
 		mirrors = append(mirrors, newStoreNode(database).Writer())
 	}
 	replicaSet = replicaSet.WithWriteMirrors(mirrors...)
-	mesh, err := pgmesh.NewBuilder[*readQueries, *queryStore, uint8](1).
-		WithHasher(pgmesh.ConstantShardHashFor[uint8](0)).
+	mesh, err := pgmesh.NewMeshBuilder[*readQueries, *queryStore, uint8](1).
+		WithShardHasher(pgmesh.NewConstantShardHasher[uint8](0)).
 		WithTracerProvider(options.tracerProvider).
 		WithMeterProvider(options.meterProvider).
 		WithLogger(options.logger).
-		Link(0, replicaSet).
+		MapVirtualShard(0, replicaSet).
 		Build()
 	if err != nil {
 		return nil, err

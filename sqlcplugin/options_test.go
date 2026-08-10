@@ -1,12 +1,23 @@
 package sqlcplugin
 
 import (
+	"context"
 	"testing"
 
 	"github.com/sqlc-dev/plugin-sdk-go/plugin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGenerateHonorsCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	response, err := Generate(ctx, &plugin.GenerateRequest{})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, response)
+}
 
 func TestParseOptionsRejectsRemovedFields(t *testing.T) {
 	t.Parallel()
@@ -185,7 +196,7 @@ func TestGenerateRetainsPublicNamesAndFixedInternals(t *testing.T) {
 	assert.Contains(
 		t,
 		source,
-		"func BuildSharded[SK any](numVShards uint64, shardHasher pgmesh.ShardHasher[SK], resolver Router[SK], options ...ShardedOption) Topology",
+		"func BuildSharded[SK any](virtualShardCount uint64, shardHasher pgmesh.ShardHasher[SK], resolver Router[SK], options ...ShardedOption) Topology",
 	)
 	assert.Contains(t, source, "type queryStore struct")
 	assert.Contains(t, source, "type readQueries struct")

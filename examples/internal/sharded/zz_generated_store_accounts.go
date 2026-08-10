@@ -123,13 +123,13 @@ type telemetryAccountsStore[SK any] struct {
 }
 
 func (q *telemetryAccountsStore[SK]) CopyAccounts(ctx context.Context, arg []*CopyAccountsT, storeOptions ...QueryOption) (result int64, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Accounts", "CopyAccounts", pgmesh.QueryKindWrite)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Accounts", "CopyAccounts", pgmesh.QueryKindWrite)
 	defer func() { storeSpan.End(err) }()
 	return q.target.CopyAccounts(ctx, arg, storeOptions...)
 }
 
 func (q *telemetryAccountsStore[SK]) CopyAccountsAsync(ctx context.Context, arg []*CopyAccountsT) *pgmesh.Future[int64] {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Accounts", "CopyAccountsAsync", pgmesh.QueryKindWrite)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Accounts", "CopyAccountsAsync", pgmesh.QueryKindWrite)
 	future := q.target.CopyAccountsAsync(ctx, arg)
 	return pgmesh.RunFuture(func() (int64, error) {
 		count, err := future.Await(context.Background())
@@ -143,31 +143,31 @@ func (q *telemetryAccountsStore[SK]) FlushCopyAccounts(ctx context.Context) erro
 }
 
 func (q *telemetryAccountsStore[SK]) GetAccount(ctx context.Context, arg *GetAccountT, storeOptions ...QueryOption) (result *Account, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Accounts", "GetAccount", pgmesh.QueryKindRead)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Accounts", "GetAccount", pgmesh.QueryKindRead)
 	defer func() { storeSpan.End(err) }()
 	return q.target.GetAccount(ctx, arg, storeOptions...)
 }
 
 func (q *telemetryAccountsStore[SK]) ListAccountsByIDs(ctx context.Context, arg []*ListAccountsByIDsT, storeOptions ...QueryOption) (result []*Account, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Accounts", "ListAccountsByIDs", pgmesh.QueryKindRead)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Accounts", "ListAccountsByIDs", pgmesh.QueryKindRead)
 	defer func() { storeSpan.End(err) }()
 	return q.target.ListAccountsByIDs(ctx, arg, storeOptions...)
 }
 
 func (q *telemetryAccountsStore[SK]) ListAllAccounts(ctx context.Context, storeOptions ...QueryOption) (result []*Account, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Accounts", "ListAllAccounts", pgmesh.QueryKindRead)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Accounts", "ListAllAccounts", pgmesh.QueryKindRead)
 	defer func() { storeSpan.End(err) }()
 	return q.target.ListAllAccounts(ctx, storeOptions...)
 }
 
 func (q *telemetryAccountsStore[SK]) UpdateAccountName(ctx context.Context, arg *UpdateAccountNameT, storeOptions ...QueryOption) (result *Account, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Accounts", "UpdateAccountName", pgmesh.QueryKindWrite)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Accounts", "UpdateAccountName", pgmesh.QueryKindWrite)
 	defer func() { storeSpan.End(err) }()
 	return q.target.UpdateAccountName(ctx, arg, storeOptions...)
 }
 
 func (q *telemetryAccountsStore[SK]) UpsertAccount(ctx context.Context, arg *UpsertAccountT, storeOptions ...QueryOption) (result *Account, err error) {
-	ctx, storeSpan := q.store.mesh.StartStoreSpan(ctx, "Accounts", "UpsertAccount", pgmesh.QueryKindWrite)
+	ctx, storeSpan := q.store.mesh.StartStoreQuerySpan(ctx, "Accounts", "UpsertAccount", pgmesh.QueryKindWrite)
 	defer func() { storeSpan.End(err) }()
 	return q.target.UpsertAccount(ctx, arg, storeOptions...)
 }
@@ -188,12 +188,12 @@ func (q *meshStore[SK]) Accounts() Accounts {
 
 // CopyAccounts groups rows by physical shard and executes one copy per group.
 func (q *groupedMeshStore[SK]) CopyAccounts(ctx context.Context, arg []*CopyAccountsT, storeOptions ...QueryOption) (result int64, err error) {
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Accounts", "CopyAccounts", pgmesh.QueryKindWrite)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Accounts", "CopyAccounts", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()
 
 	options := applyQueryOptions(storeOptions...)
 	type copyShardGroup struct {
-		shard *pgmesh.Shard[*readQueries, *queryStore]
+		shard pgmesh.ResolvedShard[*readQueries, *queryStore]
 		args  []*CopyAccountsParams
 	}
 	groupsByName := make(map[string]*copyShardGroup)
@@ -202,27 +202,27 @@ func (q *groupedMeshStore[SK]) CopyAccounts(ctx context.Context, arg []*CopyAcco
 		if q.store.resolver != nil {
 			shardKey = q.store.resolver.TenantKey(item.TenantKey)
 		}
-		shard, routeErr := q.store.mesh.Shard(shardKey)
+		shard, routeErr := q.store.mesh.Resolve(shardKey)
 		if routeErr != nil {
 			err = fmt.Errorf("route CopyAccounts input %d: %w", inputIndex, routeErr)
 			return result, err
 		}
-		shardGroup := groupsByName[shard.Name()]
+		shardGroup := groupsByName[shard.ReplicaSetName()]
 		if shardGroup == nil {
 			shardGroup = &copyShardGroup{shard: shard, args: make([]*CopyAccountsParams, 0)}
-			groupsByName[shard.Name()] = shardGroup
+			groupsByName[shard.ReplicaSetName()] = shardGroup
 		}
 		shardGroup.args = append(shardGroup.args, item.sqlcParams())
 	}
 
 	groups := make([]*copyShardGroup, 0, len(groupsByName))
-	for _, shard := range q.store.mesh.AllShards() {
-		if shardGroup := groupsByName[shard.Name()]; shardGroup != nil {
+	for _, replicaSet := range q.store.mesh.ReplicaSets() {
+		if shardGroup := groupsByName[replicaSet.Name()]; shardGroup != nil {
 			groups = append(groups, shardGroup)
 		}
 	}
 	if options.tx != nil && len(groups) > 1 {
-		querySpan.SetMultiRoute(pgmesh.RouteModeTransaction, len(groups))
+		querySpan.SetRoute(pgmesh.RouteModeTransaction, len(groups))
 		err = pgmesh.ErrCrossShardTransaction
 		return result, err
 	}
@@ -231,7 +231,7 @@ func (q *groupedMeshStore[SK]) CopyAccounts(ctx context.Context, arg []*CopyAcco
 	if options.tx != nil {
 		mode = pgmesh.RouteModeTransaction
 	}
-	querySpan.SetMultiRoute(mode, len(groups))
+	querySpan.SetRoute(mode, len(groups))
 	if len(groups) == 0 {
 		return result, err
 	}
@@ -249,7 +249,7 @@ func (q *groupedMeshStore[SK]) CopyAccounts(ctx context.Context, arg []*CopyAcco
 			if options.tx != nil {
 				target = target.WithTx(options.tx)
 			}
-			queryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
+			queryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
 			copyResults[index].count, copyResults[index].err = target.CopyAccounts(queryCtx, shardGroup.args)
 			physicalQuerySpan.End(copyResults[index].err)
 		})
@@ -259,7 +259,7 @@ func (q *groupedMeshStore[SK]) CopyAccounts(ctx context.Context, arg []*CopyAcco
 	copyErrors := make([]error, 0, len(groups))
 	for index, copyResult := range copyResults {
 		if copyResult.err != nil {
-			copyErrors = append(copyErrors, fmt.Errorf("query CopyAccounts on replica set %q: %w", groups[index].shard.Name(), copyResult.err))
+			copyErrors = append(copyErrors, fmt.Errorf("query CopyAccounts on replica set %q: %w", groups[index].shard.ReplicaSetName(), copyResult.err))
 		}
 	}
 	err = errors.Join(copyErrors...)
@@ -274,7 +274,7 @@ func (q *groupedMeshStore[SK]) CopyAccounts(ctx context.Context, arg []*CopyAcco
 
 // CopyAccountsAsync accepts rows for asynchronous COPY.
 func (q *groupedMeshStore[SK]) CopyAccountsAsync(ctx context.Context, arg []*CopyAccountsT) *pgmesh.Future[int64] {
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Accounts", "CopyAccountsAsync", pgmesh.QueryKindWrite)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Accounts", "CopyAccountsAsync", pgmesh.QueryKindWrite)
 	finish := func(future *pgmesh.Future[int64]) *pgmesh.Future[int64] {
 		return pgmesh.RunFuture(func() (int64, error) {
 			count, err := future.Await(context.Background())
@@ -284,7 +284,7 @@ func (q *groupedMeshStore[SK]) CopyAccountsAsync(ctx context.Context, arg []*Cop
 	}
 
 	type asyncCopyShardGroup struct {
-		shard   *pgmesh.Shard[*readQueries, *queryStore]
+		shard   pgmesh.ResolvedShard[*readQueries, *queryStore]
 		args    []*CopyAccountsParams
 		batcher *pgmesh.CopyBatcher[*CopyAccountsParams]
 	}
@@ -294,25 +294,25 @@ func (q *groupedMeshStore[SK]) CopyAccountsAsync(ctx context.Context, arg []*Cop
 		if q.store.resolver != nil {
 			shardKey = q.store.resolver.TenantKey(item.TenantKey)
 		}
-		shard, routeErr := q.store.mesh.Shard(shardKey)
+		shard, routeErr := q.store.mesh.Resolve(shardKey)
 		if routeErr != nil {
 			err := fmt.Errorf("route CopyAccountsAsync input %d: %w", inputIndex, routeErr)
 			return finish(pgmesh.ResolvedFuture[int64](0, err))
 		}
-		shardGroup := groupsByName[shard.Name()]
+		shardGroup := groupsByName[shard.ReplicaSetName()]
 		if shardGroup == nil {
 			shardGroup = &asyncCopyShardGroup{shard: shard, args: make([]*CopyAccountsParams, 0)}
-			groupsByName[shard.Name()] = shardGroup
+			groupsByName[shard.ReplicaSetName()] = shardGroup
 		}
 		shardGroup.args = append(shardGroup.args, item.sqlcParams())
 	}
 	groups := make([]*asyncCopyShardGroup, 0, len(groupsByName))
-	for _, shard := range q.store.mesh.AllShards() {
-		if shardGroup := groupsByName[shard.Name()]; shardGroup != nil {
+	for _, replicaSet := range q.store.mesh.ReplicaSets() {
+		if shardGroup := groupsByName[replicaSet.Name()]; shardGroup != nil {
 			groups = append(groups, shardGroup)
 		}
 	}
-	querySpan.SetMultiRoute(pgmesh.RouteModePrimary, len(groups))
+	querySpan.SetRoute(pgmesh.RouteModePrimary, len(groups))
 	if len(groups) == 0 {
 		return finish(pgmesh.ResolvedFuture[int64](0, nil))
 	}
@@ -323,10 +323,10 @@ func (q *groupedMeshStore[SK]) CopyAccountsAsync(ctx context.Context, arg []*Cop
 		return finish(pgmesh.ResolvedFuture[int64](0, err))
 	}
 	for _, shardGroup := range groups {
-		shardGroup.batcher = state.batchers[shardGroup.shard.Name()]
+		shardGroup.batcher = state.batchers[shardGroup.shard.ReplicaSetName()]
 		if shardGroup.batcher == nil {
 			state.mu.Unlock()
-			err := fmt.Errorf("query CopyAccountsAsync has no copy batcher for replica set %q", shardGroup.shard.Name())
+			err := fmt.Errorf("query CopyAccountsAsync has no copy batcher for replica set %q", shardGroup.shard.ReplicaSetName())
 			return finish(pgmesh.ResolvedFuture[int64](0, err))
 		}
 	}
@@ -341,9 +341,9 @@ func (q *groupedMeshStore[SK]) CopyAccountsAsync(ctx context.Context, arg []*Cop
 		if state.enabled {
 			future = shardGroup.batcher.Submit(acceptedContext, shardGroup.args)
 		} else {
-			future = shardGroup.batcher.SubmitImmediate(acceptedContext, shardGroup.args)
+			future = shardGroup.batcher.SubmitUnbatched(acceptedContext, shardGroup.args)
 		}
-		asyncResults = append(asyncResults, asyncCopyResult{shardName: shardGroup.shard.Name(), future: future})
+		asyncResults = append(asyncResults, asyncCopyResult{shardName: shardGroup.shard.ReplicaSetName(), future: future})
 	}
 	state.mu.Unlock()
 
@@ -374,10 +374,10 @@ func (q *groupedMeshStore[SK]) FlushCopyAccounts(ctx context.Context) error {
 		shardName string
 		future    *pgmesh.Future[struct{}]
 	}
-	flushes := make([]copyFlushResult, 0, len(q.store.mesh.AllShards()))
-	for _, shard := range q.store.mesh.AllShards() {
-		if batcher := state.batchers[shard.Name()]; batcher != nil {
-			flushes = append(flushes, copyFlushResult{shardName: shard.Name(), future: batcher.FlushAsync()})
+	flushes := make([]copyFlushResult, 0, len(q.store.mesh.ReplicaSets()))
+	for _, replicaSet := range q.store.mesh.ReplicaSets() {
+		if batcher := state.batchers[replicaSet.Name()]; batcher != nil {
+			flushes = append(flushes, copyFlushResult{shardName: replicaSet.Name(), future: batcher.FlushAsync()})
 		}
 	}
 	state.mu.Unlock()
@@ -396,7 +396,7 @@ func (q *groupedMeshStore[SK]) FlushCopyAccounts(ctx context.Context) error {
 // GetAccount executes the generated query on its target shard.
 func (q *groupedMeshStore[SK]) GetAccount(ctx context.Context, arg *GetAccountT, storeOptions ...QueryOption) (result *Account, err error) {
 	// Trace the query and record its returned error.
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Accounts", "GetAccount", pgmesh.QueryKindRead)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Accounts", "GetAccount", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()
 
 	// Resolve the shard key for this topology.
@@ -404,7 +404,7 @@ func (q *groupedMeshStore[SK]) GetAccount(ctx context.Context, arg *GetAccountT,
 	if q.store.resolver != nil {
 		shardKey = q.store.resolver.TenantKey(arg.TenantKey)
 	}
-	shard, err := q.store.mesh.Shard(shardKey)
+	shard, err := q.store.mesh.Resolve(shardKey)
 	if err != nil {
 		return result, err
 	}
@@ -415,26 +415,26 @@ func (q *groupedMeshStore[SK]) GetAccount(ctx context.Context, arg *GetAccountT,
 	switch {
 	// Transactional reads must use their transaction.
 	case options.tx != nil:
-		querySpan.SetRoute(pgmesh.RouteModeTransaction)
+		querySpan.SetRoute(pgmesh.RouteModeTransaction, 1)
 		route := shard.WriteRoute()
 		target := route.Target.WithTx(options.tx)
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeTransaction)
 		defer func() { physicalQuerySpan.End(err) }()
 		return target.GetAccount(ctx, arg.sqlcParams())
 
 	// Explicit primary reads bypass replicas.
 	case options.primary:
-		querySpan.SetRoute(pgmesh.RouteModePrimary)
+		querySpan.SetRoute(pgmesh.RouteModePrimary, 1)
 		route := shard.WriteRoute()
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModePrimary)
 		defer func() { physicalQuerySpan.End(err) }()
 		return route.Target.GetAccount(ctx, arg.sqlcParams())
 
 	// Ordinary reads use the shard's replica route.
 	default:
-		querySpan.SetRoute(pgmesh.RouteModeRead)
+		querySpan.SetRoute(pgmesh.RouteModeRead, 1)
 		route := shard.ReadRoute()
-		ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
+		ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), pgmesh.RouteModeRead)
 		defer func() { physicalQuerySpan.End(err) }()
 		return route.Target.GetAccount(ctx, arg.sqlcParams())
 	}
@@ -442,12 +442,12 @@ func (q *groupedMeshStore[SK]) GetAccount(ctx context.Context, arg *GetAccountT,
 
 // ListAccountsByIDs groups lookup values by physical shard and restores input-key result order.
 func (q *groupedMeshStore[SK]) ListAccountsByIDs(ctx context.Context, arg []*ListAccountsByIDsT, storeOptions ...QueryOption) (result []*Account, err error) {
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Accounts", "ListAccountsByIDs", pgmesh.QueryKindRead)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Accounts", "ListAccountsByIDs", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()
 
 	options := applyQueryOptions(storeOptions...)
 	type manyShardGroup struct {
-		shard     *pgmesh.Shard[*readQueries, *queryStore]
+		shard     pgmesh.ResolvedShard[*readQueries, *queryStore]
 		args      []int64
 		requested map[any]struct{}
 	}
@@ -472,32 +472,32 @@ func (q *groupedMeshStore[SK]) ListAccountsByIDs(ctx context.Context, arg []*Lis
 		if q.store.resolver != nil {
 			shardKey = q.store.resolver.TenantKey(item.TenantKey)
 		}
-		shard, routeErr := q.store.mesh.Shard(shardKey)
+		shard, routeErr := q.store.mesh.Resolve(shardKey)
 		if routeErr != nil {
 			err = fmt.Errorf("route ListAccountsByIDs input %d: %w", inputIndex, routeErr)
 			return result, err
 		}
-		shardGroup := groupsByName[shard.Name()]
+		shardGroup := groupsByName[shard.ReplicaSetName()]
 		if shardGroup == nil {
 			shardGroup = &manyShardGroup{shard: shard, args: make([]int64, 0), requested: make(map[any]struct{})}
-			groupsByName[shard.Name()] = shardGroup
+			groupsByName[shard.ReplicaSetName()] = shardGroup
 		}
 		if _, exists := shardGroup.requested[lookupKey]; exists {
 			continue
 		}
 		shardGroup.requested[lookupKey] = struct{}{}
 		shardGroup.args = append(shardGroup.args, lookupValue)
-		orderedItems = append(orderedItems, manyOrderItem{shardName: shard.Name(), key: lookupKey})
+		orderedItems = append(orderedItems, manyOrderItem{shardName: shard.ReplicaSetName(), key: lookupKey})
 	}
 
 	groups := make([]*manyShardGroup, 0, len(groupsByName))
-	for _, shard := range q.store.mesh.AllShards() {
-		if shardGroup := groupsByName[shard.Name()]; shardGroup != nil {
+	for _, replicaSet := range q.store.mesh.ReplicaSets() {
+		if shardGroup := groupsByName[replicaSet.Name()]; shardGroup != nil {
 			groups = append(groups, shardGroup)
 		}
 	}
 	if options.tx != nil && len(groups) > 1 {
-		querySpan.SetMultiRoute(pgmesh.RouteModeTransaction, len(groups))
+		querySpan.SetRoute(pgmesh.RouteModeTransaction, len(groups))
 		err = pgmesh.ErrCrossShardTransaction
 		return result, err
 	}
@@ -509,7 +509,7 @@ func (q *groupedMeshStore[SK]) ListAccountsByIDs(ctx context.Context, arg []*Lis
 	if options.tx != nil {
 		mode = pgmesh.RouteModeTransaction
 	}
-	querySpan.SetMultiRoute(mode, len(groups))
+	querySpan.SetRoute(mode, len(groups))
 	if len(groups) == 0 {
 		return result, err
 	}
@@ -526,17 +526,17 @@ func (q *groupedMeshStore[SK]) ListAccountsByIDs(ctx context.Context, arg []*Lis
 			case options.tx != nil:
 				route := shardGroup.shard.WriteRoute()
 				target := route.Target.WithTx(options.tx)
-				queryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
+				queryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
 				groupResults[index].value, groupResults[index].err = target.ListAccountsByIDs(queryCtx, shardGroup.args)
 				physicalQuerySpan.End(groupResults[index].err)
 			case options.primary:
 				route := shardGroup.shard.WriteRoute()
-				queryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
+				queryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
 				groupResults[index].value, groupResults[index].err = route.Target.ListAccountsByIDs(queryCtx, shardGroup.args)
 				physicalQuerySpan.End(groupResults[index].err)
 			default:
 				route := shardGroup.shard.ReadRoute()
-				queryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
+				queryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
 				groupResults[index].value, groupResults[index].err = route.Target.ListAccountsByIDs(queryCtx, shardGroup.args)
 				physicalQuerySpan.End(groupResults[index].err)
 			}
@@ -547,7 +547,7 @@ func (q *groupedMeshStore[SK]) ListAccountsByIDs(ctx context.Context, arg []*Lis
 	groupErrors := make([]error, 0, len(groups))
 	for index, groupResult := range groupResults {
 		if groupResult.err != nil {
-			groupErrors = append(groupErrors, fmt.Errorf("query ListAccountsByIDs on replica set %q: %w", groups[index].shard.Name(), groupResult.err))
+			groupErrors = append(groupErrors, fmt.Errorf("query ListAccountsByIDs on replica set %q: %w", groups[index].shard.ReplicaSetName(), groupResult.err))
 		}
 	}
 	err = errors.Join(groupErrors...)
@@ -558,19 +558,19 @@ func (q *groupedMeshStore[SK]) ListAccountsByIDs(ctx context.Context, arg []*Lis
 	rowsByGroup := make(map[string]map[any][]*Account, len(groups))
 	for groupIndex, groupResult := range groupResults {
 		rowsByKey := make(map[any][]*Account)
-		rowsByGroup[groups[groupIndex].shard.Name()] = rowsByKey
+		rowsByGroup[groups[groupIndex].shard.ReplicaSetName()] = rowsByKey
 		for resultIndex, row := range groupResult.value {
 			if row == nil {
-				groupErrors = append(groupErrors, fmt.Errorf("query ListAccountsByIDs on replica set %q returned nil row at result %d", groups[groupIndex].shard.Name(), resultIndex))
+				groupErrors = append(groupErrors, fmt.Errorf("query ListAccountsByIDs on replica set %q returned nil row at result %d", groups[groupIndex].shard.ReplicaSetName(), resultIndex))
 				continue
 			}
 			resultKey := any(row.ID)
 			if resultKey != nil && !reflect.ValueOf(resultKey).Comparable() {
-				groupErrors = append(groupErrors, fmt.Errorf("query ListAccountsByIDs on replica set %q result %d has non-comparable lookup key type %T", groups[groupIndex].shard.Name(), resultIndex, resultKey))
+				groupErrors = append(groupErrors, fmt.Errorf("query ListAccountsByIDs on replica set %q result %d has non-comparable lookup key type %T", groups[groupIndex].shard.ReplicaSetName(), resultIndex, resultKey))
 				continue
 			}
 			if _, requested := groups[groupIndex].requested[resultKey]; !requested {
-				groupErrors = append(groupErrors, fmt.Errorf("query ListAccountsByIDs on replica set %q result %d has an unrequested lookup key", groups[groupIndex].shard.Name(), resultIndex))
+				groupErrors = append(groupErrors, fmt.Errorf("query ListAccountsByIDs on replica set %q result %d has an unrequested lookup key", groups[groupIndex].shard.ReplicaSetName(), resultIndex))
 				continue
 			}
 			rowsByKey[resultKey] = append(rowsByKey[resultKey], row)
@@ -589,13 +589,13 @@ func (q *groupedMeshStore[SK]) ListAccountsByIDs(ctx context.Context, arg []*Lis
 
 // ListAllAccounts executes the generated query on every physical shard.
 func (q *groupedMeshStore[SK]) ListAllAccounts(ctx context.Context, storeOptions ...QueryOption) (result []*Account, err error) {
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Accounts", "ListAllAccounts", pgmesh.QueryKindRead)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Accounts", "ListAllAccounts", pgmesh.QueryKindRead)
 	defer func() { querySpan.End(err) }()
 
 	options := applyQueryOptions(storeOptions...)
-	shards := q.store.mesh.AllShards()
+	replicaSets := q.store.mesh.ReplicaSets()
 	if options.tx != nil {
-		querySpan.SetMultiRoute(pgmesh.RouteModeTransaction, len(shards))
+		querySpan.SetRoute(pgmesh.RouteModeTransaction, len(replicaSets))
 		err = pgmesh.ErrCrossShardTransaction
 		return result, err
 	}
@@ -604,35 +604,35 @@ func (q *groupedMeshStore[SK]) ListAllAccounts(ctx context.Context, storeOptions
 	if options.primary {
 		mode = pgmesh.RouteModePrimary
 	}
-	querySpan.SetMultiRoute(mode, len(shards))
+	querySpan.SetRoute(mode, len(replicaSets))
 
 	type shardResult struct {
 		value []*Account
 		err   error
 	}
-	shardResults := make([]shardResult, len(shards))
+	shardResults := make([]shardResult, len(replicaSets))
 	var group sync.WaitGroup
-	for index, shard := range shards {
+	for index, replicaSet := range replicaSets {
 		group.Go(func() {
 			if options.primary {
-				route := shard.WriteRoute()
-				queryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
+				route := replicaSet.WriteRoute()
+				queryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), mode)
 				shardResults[index].value, shardResults[index].err = route.Target.ListAllAccounts(queryCtx)
 				physicalQuerySpan.End(shardResults[index].err)
 				return
 			}
-			route := shard.ReadRoute()
-			queryCtx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata().WithoutVirtualShard(), mode)
+			route := replicaSet.ReadRoute()
+			queryCtx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), mode)
 			shardResults[index].value, shardResults[index].err = route.Target.ListAllAccounts(queryCtx)
 			physicalQuerySpan.End(shardResults[index].err)
 		})
 	}
 	group.Wait()
 
-	shardErrors := make([]error, 0, len(shards))
+	shardErrors := make([]error, 0, len(replicaSets))
 	for index, shardResult := range shardResults {
 		if shardResult.err != nil {
-			shardErrors = append(shardErrors, fmt.Errorf("query ListAllAccounts on replica set %q: %w", shards[index].Name(), shardResult.err))
+			shardErrors = append(shardErrors, fmt.Errorf("query ListAllAccounts on replica set %q: %w", replicaSets[index].Name(), shardResult.err))
 		}
 	}
 	err = errors.Join(shardErrors...)
@@ -648,7 +648,7 @@ func (q *groupedMeshStore[SK]) ListAllAccounts(ctx context.Context, storeOptions
 // UpdateAccountName executes the generated query on its target shard.
 func (q *groupedMeshStore[SK]) UpdateAccountName(ctx context.Context, arg *UpdateAccountNameT, storeOptions ...QueryOption) (result *Account, err error) {
 	// Trace the query and record its returned error.
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Accounts", "UpdateAccountName", pgmesh.QueryKindWrite)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Accounts", "UpdateAccountName", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()
 
 	// Resolve the shard key for this topology.
@@ -656,7 +656,7 @@ func (q *groupedMeshStore[SK]) UpdateAccountName(ctx context.Context, arg *Updat
 	if q.store.resolver != nil {
 		shardKey = q.store.resolver.TenantKey(arg.TenantKey)
 	}
-	shard, err := q.store.mesh.Shard(shardKey)
+	shard, err := q.store.mesh.Resolve(shardKey)
 	if err != nil {
 		return result, err
 	}
@@ -674,8 +674,8 @@ func (q *groupedMeshStore[SK]) UpdateAccountName(ctx context.Context, arg *Updat
 	}
 
 	// Execute the write after recording its resolved route.
-	querySpan.SetRoute(mode)
-	ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), mode)
+	querySpan.SetRoute(mode, 1)
+	ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), mode)
 	defer func() { physicalQuerySpan.End(err) }()
 	return target.UpdateAccountName(ctx, arg.sqlcParams())
 }
@@ -683,7 +683,7 @@ func (q *groupedMeshStore[SK]) UpdateAccountName(ctx context.Context, arg *Updat
 // UpsertAccount executes the generated query on its target shard.
 func (q *groupedMeshStore[SK]) UpsertAccount(ctx context.Context, arg *UpsertAccountT, storeOptions ...QueryOption) (result *Account, err error) {
 	// Trace the query and record its returned error.
-	ctx, querySpan := q.store.mesh.StartSpan(ctx, "Accounts", "UpsertAccount", pgmesh.QueryKindWrite)
+	ctx, querySpan := q.store.mesh.StartLogicalQuerySpan(ctx, "Accounts", "UpsertAccount", pgmesh.QueryKindWrite)
 	defer func() { querySpan.End(err) }()
 
 	// Resolve the shard key for this topology.
@@ -691,7 +691,7 @@ func (q *groupedMeshStore[SK]) UpsertAccount(ctx context.Context, arg *UpsertAcc
 	if q.store.resolver != nil {
 		shardKey = q.store.resolver.TenantKey(arg.TenantKey)
 	}
-	shard, err := q.store.mesh.Shard(shardKey)
+	shard, err := q.store.mesh.Resolve(shardKey)
 	if err != nil {
 		return result, err
 	}
@@ -709,8 +709,8 @@ func (q *groupedMeshStore[SK]) UpsertAccount(ctx context.Context, arg *UpsertAcc
 	}
 
 	// Execute the write after recording its resolved route.
-	querySpan.SetRoute(mode)
-	ctx, physicalQuerySpan := querySpan.StartQuerySpan(ctx, route.Metadata(), mode)
+	querySpan.SetRoute(mode, 1)
+	ctx, physicalQuerySpan := querySpan.StartPhysicalQuerySpan(ctx, route.Metadata(), mode)
 	defer func() { physicalQuerySpan.End(err) }()
 	return target.UpsertAccount(ctx, arg.sqlcParams())
 }

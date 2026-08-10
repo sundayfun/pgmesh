@@ -35,32 +35,32 @@ A physical database record has Debug level, message
 | `failed` | Boolean error outcome |
 | `duration` | Physical execution duration as a `slog.Duration` value |
 | `virtual_shard` | Exact virtual shard, encoded as a string and present only when known |
-| `shard` | Physical shard (replica-set) name |
+| `replica_set` | Physical replica-set name |
 | `node` | `primary`, `replica-N`, or `transaction` |
 | `node_role` | `primary`, `read_replica`, or `transaction` |
 | `route_mode` | `read`, `primary`, or `transaction` |
 | `error` | Error value, present only when the execution failed |
 
 A logical call produces `pgmesh logical query completed`. It has the common
-query attributes plus `route_mode`, `route_scope`, and `shard_count`; its
+query attributes plus `route_mode`, `route_scope`, and `replica_set_count`; its
 duration includes routing, physical executions, and fan-out aggregation.
 
 A configured factory also produces a Debug record with message
-`pgmesh query wrapper completed` and these attributes:
+`pgmesh store query completed` and these attributes:
 
 | Attribute | Value |
 | --- | --- |
 | `store_name` | Generated query-group name |
 | `query_name` | Generated query method name |
 | `query_kind` | `read` or `write` |
-| `wrapper_delegated` | Whether the wrapper called the generated logical query |
+| `store_delegated` | Whether the wrapper called the generated logical query |
 | `failed` | Boolean error outcome |
 | `duration` | End-to-end wrapper duration |
 | `error` | Error value, present only when the wrapper failed |
 
-A cache hit produces only the wrapper record with `wrapper_delegated=false`.
+A cache hit produces only the store record with `store_delegated=false`.
 A miss logs each physical execution, then the logical completion, and finally
-the wrapper completion with `wrapper_delegated=true`. A routing failure has no
+the store completion with `store_delegated=true`. A routing failure has no
 physical record because no shard was selected. Contexts are passed to
 `LogAttrs`, allowing a context-aware slog handler or OpenTelemetry logging
 bridge to add trace correlation fields.
