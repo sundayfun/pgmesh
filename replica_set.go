@@ -73,7 +73,7 @@ func (s *ReplicaSet[R, W]) ReadRoute() Route[R] {
 		metadata: RouteMetadata{
 			VirtualShardIndex: 0,
 			HasVirtualShard:   false,
-			ReplicaSetName:    s.name,
+			PhysicalShardName: s.name,
 			NodeName:          target.name,
 			NodeRole:          target.role,
 		},
@@ -88,7 +88,7 @@ func (s *ReplicaSet[R, W]) WriteRoute() Route[W] {
 		metadata: RouteMetadata{
 			VirtualShardIndex: 0,
 			HasVirtualShard:   false,
-			ReplicaSetName:    s.name,
+			PhysicalShardName: s.name,
 			NodeName:          target.name,
 			NodeRole:          target.role,
 		},

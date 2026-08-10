@@ -197,6 +197,34 @@ func writerNames(writers []*fakeWriter) []string {
 	return names
 }
 
+func TestPhysicalShardTelemetryAttributeNames(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{
+			name: "physical shard name",
+			got:  pgmesh.AttributePhysicalShardName,
+			want: "pgmesh.physical_shard.name",
+		},
+		{
+			name: "route physical shard count",
+			got:  pgmesh.AttributeRoutePhysicalShardCount,
+			want: "pgmesh.route.physical_shard_count",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, test.want, test.got)
+		})
+	}
+}
+
 func TestQueryTelemetryRecordsRoutingAndErrors(t *testing.T) {
 	t.Parallel()
 
@@ -252,7 +280,7 @@ func TestQueryTelemetryRecordsRoutingAndErrors(t *testing.T) {
 	assert.Equal(t, "write", attributes[pgmesh.AttributeQueryKind].AsString())
 	assert.Equal(t, "*errors.errorString", attributes[attribute.Key("error.type")].AsString())
 	assert.Equal(t, "0", attributes[pgmesh.AttributeVirtualShardIndex].AsString())
-	assert.Equal(t, "main", attributes[pgmesh.AttributeReplicaSetName].AsString())
+	assert.Equal(t, "main", attributes[pgmesh.AttributePhysicalShardName].AsString())
 	assert.Equal(t, "primary", attributes[pgmesh.AttributeNodeName].AsString())
 	assert.Equal(t, "primary", attributes[pgmesh.AttributeNodeRole].AsString())
 	assert.Equal(t, "primary", attributes[pgmesh.AttributeRouteMode].AsString())
@@ -264,8 +292,8 @@ func TestQueryTelemetryRecordsRoutingAndErrors(t *testing.T) {
 	assert.Equal(t, "pgmesh.query.logical.UserStore.CreateUser", operation.Name())
 	operationAttributes := attributeMap(operation.Attributes())
 	assert.Equal(t, "single", operationAttributes[pgmesh.AttributeRouteScope].AsString())
-	assert.Equal(t, int64(1), operationAttributes[pgmesh.AttributeRouteReplicaSetCount].AsInt64())
-	assert.NotContains(t, operationAttributes, attribute.Key(pgmesh.AttributeReplicaSetName))
+	assert.Equal(t, int64(1), operationAttributes[pgmesh.AttributeRoutePhysicalShardCount].AsInt64())
+	assert.NotContains(t, operationAttributes, attribute.Key(pgmesh.AttributePhysicalShardName))
 
 	var metrics metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(t.Context(), &metrics))
@@ -279,15 +307,15 @@ func TestQueryTelemetryRecordsRoutingAndErrors(t *testing.T) {
 	require.Len(t, operationHistogram.DataPoints, 1)
 	operationMetricAttributes := attributeMap(operationHistogram.DataPoints[0].Attributes.ToSlice())
 	assert.Equal(t, "single", operationMetricAttributes[pgmesh.AttributeRouteScope].AsString())
-	assert.NotContains(t, operationMetricAttributes, attribute.Key(pgmesh.AttributeReplicaSetName))
-	assert.NotContains(t, operationMetricAttributes, attribute.Key(pgmesh.AttributeRouteReplicaSetCount))
+	assert.NotContains(t, operationMetricAttributes, attribute.Key(pgmesh.AttributePhysicalShardName))
+	assert.NotContains(t, operationMetricAttributes, attribute.Key(pgmesh.AttributeRoutePhysicalShardCount))
 
 	logLines := strings.Split(strings.TrimSpace(logOutput.String()), "\n")
 	require.Len(t, logLines, 2)
 	var queryLog map[string]any
 	require.NoError(t, json.Unmarshal([]byte(logLines[0]), &queryLog))
 	assert.Equal(t, "pgmesh physical query completed", queryLog["msg"])
-	assert.Equal(t, "main", queryLog["replica_set"])
+	assert.Equal(t, "main", queryLog["physical_shard"])
 	assert.Equal(t, "0", queryLog["virtual_shard"])
 	assert.Equal(t, "primary", queryLog["node"])
 	assert.Equal(t, "primary", queryLog["node_role"])
@@ -296,7 +324,7 @@ func TestQueryTelemetryRecordsRoutingAndErrors(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(logLines[1]), &operationLog))
 	assert.Equal(t, "pgmesh logical query completed", operationLog["msg"])
 	assert.Equal(t, "single", operationLog["route_scope"])
-	assert.InDelta(t, 1, operationLog["replica_set_count"], 0)
+	assert.InDelta(t, 1, operationLog["physical_shard_count"], 0)
 }
 
 func TestQueryTelemetryRecordsSuccessfulQueries(t *testing.T) {
@@ -341,7 +369,7 @@ func TestQueryTelemetryRecordsSuccessfulQueries(t *testing.T) {
 		attributes := attributeMap(spans[index].Attributes())
 		nodes[attributes[pgmesh.AttributeNodeName].AsString()] = struct{}{}
 		assert.Equal(t, "read_replica", attributes[pgmesh.AttributeNodeRole].AsString())
-		assert.Equal(t, "main", attributes[pgmesh.AttributeReplicaSetName].AsString())
+		assert.Equal(t, "main", attributes[pgmesh.AttributePhysicalShardName].AsString())
 		assert.Equal(t, "read", attributes[pgmesh.AttributeRouteMode].AsString())
 	}
 	assert.Equal(t, map[string]struct{}{"replica-0": {}, "replica-1": {}}, nodes)
@@ -409,7 +437,7 @@ func TestQueryTelemetryRecordsPhysicalQueriesInFlight(t *testing.T) {
 	assert.Equal(t, "UserStore", attributes[pgmesh.AttributeStoreName].AsString())
 	assert.Equal(t, "GetUser", attributes[pgmesh.AttributeQueryName].AsString())
 	assert.Equal(t, "read", attributes[pgmesh.AttributeQueryKind].AsString())
-	assert.Equal(t, "main", attributes[pgmesh.AttributeReplicaSetName].AsString())
+	assert.Equal(t, "main", attributes[pgmesh.AttributePhysicalShardName].AsString())
 	assert.Equal(t, "primary", attributes[pgmesh.AttributeNodeName].AsString())
 	assert.Equal(t, "primary", attributes[pgmesh.AttributeNodeRole].AsString())
 	assert.Equal(t, "read", attributes[pgmesh.AttributeRouteMode].AsString())
@@ -505,7 +533,7 @@ func TestCopyBatchObserverRecordsPhysicalCopyMetrics(t *testing.T) {
 			assert.Equal(t, "Users", attributes[pgmesh.AttributeStoreName].AsString())
 			assert.Equal(t, "CopyUsers", attributes[pgmesh.AttributeQueryName].AsString())
 			assert.Equal(t, "write", attributes[pgmesh.AttributeQueryKind].AsString())
-			assert.Equal(t, "main", attributes[pgmesh.AttributeReplicaSetName].AsString())
+			assert.Equal(t, "main", attributes[pgmesh.AttributePhysicalShardName].AsString())
 			assert.Equal(t, "primary", attributes[pgmesh.AttributeNodeName].AsString())
 			assert.Equal(t, "primary", attributes[pgmesh.AttributeNodeRole].AsString())
 			assert.Equal(t, "primary", attributes[pgmesh.AttributeRouteMode].AsString())
@@ -642,7 +670,7 @@ func TestStoreTelemetryRecordsFactoryShortCircuit(t *testing.T) {
 	assert.Equal(t, "Users", attributes[pgmesh.AttributeStoreName].AsString())
 	assert.Equal(t, "GetUser", attributes[pgmesh.AttributeQueryName].AsString())
 	assert.False(t, attributes[pgmesh.AttributeStoreDelegated].AsBool())
-	assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeReplicaSetName))
+	assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributePhysicalShardName))
 	assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeRouteMode))
 
 	var metrics metricdata.ResourceMetrics
@@ -659,7 +687,7 @@ func TestStoreTelemetryRecordsFactoryShortCircuit(t *testing.T) {
 	assert.Equal(t, "Users", logRecord["store_name"])
 	assert.Equal(t, "GetUser", logRecord["query_name"])
 	assert.Equal(t, false, logRecord["store_delegated"])
-	assert.NotContains(t, logRecord, "replica_set")
+	assert.NotContains(t, logRecord, "physical_shard")
 	assert.NotContains(t, logRecord, "route_mode")
 }
 
@@ -706,12 +734,12 @@ func TestStoreTelemetryCreatesDedicatedInternalQueryChild(t *testing.T) {
 	assert.Equal(t, store.SpanContext().SpanID(), operation.Parent().SpanID())
 	assert.Equal(t, operation.SpanContext().SpanID(), query.Parent().SpanID())
 	queryAttributes := attributeMap(query.Attributes())
-	assert.Equal(t, "main", queryAttributes[pgmesh.AttributeReplicaSetName].AsString())
+	assert.Equal(t, "main", queryAttributes[pgmesh.AttributePhysicalShardName].AsString())
 	assert.Equal(t, "primary", queryAttributes[pgmesh.AttributeNodeName].AsString())
 	assert.NotContains(t, queryAttributes, attribute.Key(pgmesh.AttributeStoreDelegated))
 	storeAttributes := attributeMap(store.Attributes())
 	assert.True(t, storeAttributes[pgmesh.AttributeStoreDelegated].AsBool())
-	assert.NotContains(t, storeAttributes, attribute.Key(pgmesh.AttributeReplicaSetName))
+	assert.NotContains(t, storeAttributes, attribute.Key(pgmesh.AttributePhysicalShardName))
 	assert.NotContains(t, storeAttributes, attribute.Key(pgmesh.AttributeRouteMode))
 
 	var metrics metricdata.ResourceMetrics
@@ -725,7 +753,7 @@ func TestStoreTelemetryCreatesDedicatedInternalQueryChild(t *testing.T) {
 	queryHistogram := metricHistogram(t, metrics, pgmesh.MetricPhysicalQueryDuration)
 	require.Len(t, queryHistogram.DataPoints, 1)
 	queryMetricAttributes := attributeMap(queryHistogram.DataPoints[0].Attributes.ToSlice())
-	assert.Equal(t, "main", queryMetricAttributes[pgmesh.AttributeReplicaSetName].AsString())
+	assert.Equal(t, "main", queryMetricAttributes[pgmesh.AttributePhysicalShardName].AsString())
 	assert.Equal(t, "primary", queryMetricAttributes[pgmesh.AttributeNodeName].AsString())
 	assert.NotContains(t, queryMetricAttributes, attribute.Key(pgmesh.AttributeStoreDelegated))
 
@@ -734,7 +762,7 @@ func TestStoreTelemetryCreatesDedicatedInternalQueryChild(t *testing.T) {
 	var queryLog map[string]any
 	require.NoError(t, json.Unmarshal([]byte(logLines[0]), &queryLog))
 	assert.Equal(t, "pgmesh physical query completed", queryLog["msg"])
-	assert.Equal(t, "main", queryLog["replica_set"])
+	assert.Equal(t, "main", queryLog["physical_shard"])
 	assert.NotContains(t, queryLog, "store_delegated")
 	var operationLog map[string]any
 	require.NoError(t, json.Unmarshal([]byte(logLines[1]), &operationLog))
@@ -743,7 +771,7 @@ func TestStoreTelemetryCreatesDedicatedInternalQueryChild(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(logLines[2]), &storeLog))
 	assert.Equal(t, "pgmesh store query completed", storeLog["msg"])
 	assert.Equal(t, true, storeLog["store_delegated"])
-	assert.NotContains(t, storeLog, "replica_set")
+	assert.NotContains(t, storeLog, "physical_shard")
 }
 
 func TestStoreTelemetryRecordsWrapperErrorsWithoutInternalExecution(t *testing.T) {
@@ -845,12 +873,12 @@ func TestQueryTelemetryRecordsMultiRoute(t *testing.T) {
 	assert.Equal(t, "pgmesh.query.logical.UserStore.DeleteAll", spans[2].Name())
 	assert.Equal(t, "primary", attributes[pgmesh.AttributeRouteMode].AsString())
 	assert.Equal(t, "fanout", attributes[pgmesh.AttributeRouteScope].AsString())
-	assert.Equal(t, int64(2), attributes[pgmesh.AttributeRouteReplicaSetCount].AsInt64())
-	assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeReplicaSetName))
+	assert.Equal(t, int64(2), attributes[pgmesh.AttributeRoutePhysicalShardCount].AsInt64())
+	assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributePhysicalShardName))
 	physicalShards := make(map[string]struct{}, 2)
 	for _, physical := range spans[:2] {
 		physicalAttributes := attributeMap(physical.Attributes())
-		physicalShards[physicalAttributes[pgmesh.AttributeReplicaSetName].AsString()] = struct{}{}
+		physicalShards[physicalAttributes[pgmesh.AttributePhysicalShardName].AsString()] = struct{}{}
 		assert.Equal(t, "primary", physicalAttributes[pgmesh.AttributeNodeName].AsString())
 		assert.NotContains(t, physicalAttributes, attribute.Key(pgmesh.AttributeVirtualShardIndex))
 	}
@@ -865,13 +893,13 @@ func TestQueryTelemetryRecordsMultiRoute(t *testing.T) {
 	metricAttributes := attributeMap(operationHistogram.DataPoints[0].Attributes.ToSlice())
 	assert.Equal(t, "primary", metricAttributes[pgmesh.AttributeRouteMode].AsString())
 	assert.Equal(t, "fanout", metricAttributes[pgmesh.AttributeRouteScope].AsString())
-	assert.NotContains(t, metricAttributes, attribute.Key(pgmesh.AttributeRouteReplicaSetCount))
-	assert.NotContains(t, metricAttributes, attribute.Key(pgmesh.AttributeReplicaSetName))
+	assert.NotContains(t, metricAttributes, attribute.Key(pgmesh.AttributeRoutePhysicalShardCount))
+	assert.NotContains(t, metricAttributes, attribute.Key(pgmesh.AttributePhysicalShardName))
 	queryHistogram := metricHistogram(t, metrics, pgmesh.MetricPhysicalQueryDuration)
 	require.Len(t, queryHistogram.DataPoints, 2)
 	for _, point := range queryHistogram.DataPoints {
 		queryAttributes := attributeMap(point.Attributes.ToSlice())
-		assert.Contains(t, physicalShards, queryAttributes[pgmesh.AttributeReplicaSetName].AsString())
+		assert.Contains(t, physicalShards, queryAttributes[pgmesh.AttributePhysicalShardName].AsString())
 	}
 
 	logLines := strings.Split(strings.TrimSpace(logOutput.String()), "\n")
@@ -879,7 +907,7 @@ func TestQueryTelemetryRecordsMultiRoute(t *testing.T) {
 	var operationLog map[string]any
 	require.NoError(t, json.Unmarshal([]byte(logLines[2]), &operationLog))
 	assert.Equal(t, "fanout", operationLog["route_scope"])
-	assert.InDelta(t, 2, operationLog["replica_set_count"], 0)
+	assert.InDelta(t, 2, operationLog["physical_shard_count"], 0)
 }
 
 func attributeMap(items []attribute.KeyValue) map[attribute.Key]attribute.Value {
@@ -965,7 +993,7 @@ func assertMetricAttributes(t *testing.T, items []attribute.KeyValue) {
 	assert.Equal(t, "write", attributes[pgmesh.AttributeQueryKind].AsString())
 	assert.Equal(t, "*errors.errorString", attributes[attribute.Key("error.type")].AsString())
 	assert.NotContains(t, attributes, attribute.Key(pgmesh.AttributeVirtualShardIndex))
-	assert.Equal(t, "main", attributes[pgmesh.AttributeReplicaSetName].AsString())
+	assert.Equal(t, "main", attributes[pgmesh.AttributePhysicalShardName].AsString())
 	assert.Equal(t, "primary", attributes[pgmesh.AttributeNodeName].AsString())
 	assert.Equal(t, "primary", attributes[pgmesh.AttributeNodeRole].AsString())
 	assert.Equal(t, "primary", attributes[pgmesh.AttributeRouteMode].AsString())

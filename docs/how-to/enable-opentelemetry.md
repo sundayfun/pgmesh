@@ -61,7 +61,7 @@ Each histogram's count reports throughput for its layer:
 
 - Use `pgmesh.query.logical.duration` for application-call QPS and latency.
 - Use `pgmesh.query.physical.duration` for database QPS and latency, grouped by
-  `pgmesh.replica_set.name`, `pgmesh.node.name`, and optionally query name.
+  `pgmesh.physical_shard.name`, `pgmesh.node.name`, and optionally query name.
 - Use `pgmesh.query.store.duration` with
   `pgmesh.store.delegated=false` for factory short-circuits such as
   cache hits, and `true` for delegations.
@@ -112,7 +112,7 @@ histogram_quantile(
 Physical database QPS for every shard and selected node:
 
 ```promql
-sum by ("pgmesh.replica_set.name", "pgmesh.node.name", "pgmesh.node.role") (
+sum by ("pgmesh.physical_shard.name", "pgmesh.node.name", "pgmesh.node.role") (
   rate({"pgmesh.query.physical.duration_count"}[5m])
 )
 ```
@@ -120,7 +120,7 @@ sum by ("pgmesh.replica_set.name", "pgmesh.node.name", "pgmesh.node.role") (
 Physical database queries currently in flight on every shard and selected node:
 
 ```promql
-sum by ("pgmesh.replica_set.name", "pgmesh.node.name", "pgmesh.node.role") (
+sum by ("pgmesh.physical_shard.name", "pgmesh.node.name", "pgmesh.node.role") (
   {"pgmesh.query.physical.inflight"}
 )
 ```
@@ -130,7 +130,7 @@ Physical database p95 latency for every shard and selected node:
 ```promql
 histogram_quantile(
   0.95,
-  sum by (le, "pgmesh.replica_set.name", "pgmesh.node.name", "pgmesh.node.role") (
+  sum by (le, "pgmesh.physical_shard.name", "pgmesh.node.name", "pgmesh.node.role") (
     rate({"pgmesh.query.physical.duration_bucket"}[5m])
   )
 )
@@ -145,7 +145,7 @@ Read-replica QPS can use the same throughput query with
 `"pgmesh.node.role"="read_replica"`:
 
 ```promql
-sum by ("pgmesh.replica_set.name", "pgmesh.node.name") (
+sum by ("pgmesh.physical_shard.name", "pgmesh.node.name") (
   rate({
     "pgmesh.query.physical.duration_count",
     "pgmesh.node.role"="read_replica"
@@ -158,7 +158,7 @@ Read-replica p95 latency:
 ```promql
 histogram_quantile(
   0.95,
-  sum by (le, "pgmesh.replica_set.name", "pgmesh.node.name") (
+  sum by (le, "pgmesh.physical_shard.name", "pgmesh.node.name") (
     rate({
       "pgmesh.query.physical.duration_bucket",
       "pgmesh.node.role"="read_replica"
@@ -174,7 +174,7 @@ Physical database error percentage for every generated method and target:
 sum by (
   "pgmesh.store.name",
   "pgmesh.query.name",
-  "pgmesh.replica_set.name",
+  "pgmesh.physical_shard.name",
   "pgmesh.node.name"
 ) (
   rate({
@@ -186,7 +186,7 @@ sum by (
 sum by (
   "pgmesh.store.name",
   "pgmesh.query.name",
-  "pgmesh.replica_set.name",
+  "pgmesh.physical_shard.name",
   "pgmesh.node.name"
 ) (
   rate({"pgmesh.query.physical.duration_count"}[5m])
@@ -229,7 +229,7 @@ Physical COPY p95 latency for every shard and selected node:
 ```promql
 histogram_quantile(
   0.95,
-  sum by (le, "pgmesh.replica_set.name", "pgmesh.node.name") (
+  sum by (le, "pgmesh.physical_shard.name", "pgmesh.node.name") (
     rate({"pgmesh.copy.batch.duration_bucket"}[5m])
   )
 )
@@ -265,7 +265,7 @@ wrapper:
 | `pgmesh.route.scope` | `single`, `fanout`, or `unresolved` |
 | `error.type` | Error type on failure; omitted on success |
 
-Logical spans and logs also include `pgmesh.route.replica_set_count`. The count is
+Logical spans and logs also include `pgmesh.route.physical_shard_count`. The count is
 not a metric dimension because arbitrary fan-out sizes would create unnecessary
 time series.
 
@@ -280,7 +280,7 @@ target:
 | `pgmesh.store.name` | Generated query-group name |
 | `pgmesh.query.name` | Generated query method name |
 | `pgmesh.query.kind` | `read` or `write` |
-| `pgmesh.replica_set.name` | Physical shard (replica-set) topology name |
+| `pgmesh.physical_shard.name` | Configured physical-shard name |
 | `pgmesh.node.name` | `primary`, `replica-N`, or `transaction` |
 | `pgmesh.node.role` | `primary`, `read_replica`, or `transaction` |
 | `pgmesh.route.mode` | `read`, `primary`, or `transaction` |
