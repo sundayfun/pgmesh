@@ -469,13 +469,13 @@ func uniqueGeneratedName(preferred string, usedNames map[string]struct{}) string
 }
 
 type queryValue struct {
-	emit        bool           `exhaustruct:"optional"`
-	emitPointer bool           `exhaustruct:"optional"`
-	name        string         `exhaustruct:"optional"`
-	dbName      string         `exhaustruct:"optional"`
-	structType  *goStruct      `exhaustruct:"optional"`
-	typ         string         `exhaustruct:"optional"`
-	column      *plugin.Column `exhaustruct:"optional"`
+	emit        bool           //exhaustruct:optional
+	emitPointer bool           //exhaustruct:optional
+	name        string         //exhaustruct:optional
+	dbName      string         //exhaustruct:optional
+	structType  *goStruct      //exhaustruct:optional
+	typ         string         //exhaustruct:optional
+	column      *plugin.Column //exhaustruct:optional
 }
 
 func (v queryValue) isEmpty() bool {

@@ -36,7 +36,7 @@ linters:
     - paralleltest
     - nakedret
     - testifylint
-    - exhaustruct
+    - exhaustruct_v5
     - goconst
     - clickhouselint
   settings:
@@ -69,7 +69,10 @@ linters:
     rules:
       - path: '(.+)_test\.go'
         linters:
-          - exhaustruct
+          - exhaustruct_v5
+      - text: 'is missing field TenantKey'
+        linters:
+          - exhaustruct_v5
       - path: 'tests/.+integration_test\.go'
         linters:
           - paralleltest
@@ -80,6 +83,7 @@ formatters:
   settings:
     gofumpt:
       module-path: github.com/sundayfun/pgmesh
-      extra-rules: true
+      extra:
+        group-params: true
     golines:
       max-len: 140

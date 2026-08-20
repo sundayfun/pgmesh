@@ -76,8 +76,8 @@ Construct the generated `Store` with a singleton topology:
 ```go
 queries, err := db.NewStore(ctx, db.Singleton(pool))
 account, err := queries.Accounts().GetAccount(ctx, &db.GetAccountT{
-    TenantKey: db.TenantKey{TenantID: tenantID},
-    ID:        accountID,
+    TenantID: tenantID,
+    ID:       accountID,
 })
 ```
 

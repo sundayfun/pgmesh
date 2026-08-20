@@ -30,13 +30,13 @@ func ExampleStore() {
 
 	ctx := context.Background()
 	users := queries.Users()
-	if _, err := users.GetUser(ctx, &GetUserT{TenantKey: TenantKey{TenantID: 10}, ID: 20}); err != nil {
+	if _, err := users.GetUser(ctx, &GetUserT{TenantID: 10, ID: 20}); err != nil {
 		panic(err)
 	}
-	if _, err := users.GetUser(ctx, &GetUserT{TenantKey: TenantKey{TenantID: 10}, ID: 20}, ReadFromPrimary()); err != nil {
+	if _, err := users.GetUser(ctx, &GetUserT{TenantID: 10, ID: 20}, ReadFromPrimary()); err != nil {
 		panic(err)
 	}
-	if _, err := users.CreateUser(ctx, &CreateUserT{TenantKey: TenantKey{TenantID: 10}, ID: 20, Name: "user"}); err != nil {
+	if _, err := users.CreateUser(ctx, &CreateUserT{TenantID: 10, ID: 20, Name: "user"}); err != nil {
 		panic(err)
 	}
 

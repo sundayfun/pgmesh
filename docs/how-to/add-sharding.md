@@ -102,7 +102,7 @@ configured. Writes use the selected physical shard's primary:
 
 ```go
 account, err := queries.Accounts().UpsertAccount(ctx, &db.UpsertAccountT{
-    TenantKey:   db.TenantKey{TenantID: tenantID},
+    TenantID:    tenantID,
     ID:          accountID,
     DisplayName: "Ada",
 })
@@ -114,8 +114,8 @@ Force a routed read to the primary when current data is required:
 account, err := queries.Accounts().GetAccount(
     ctx,
     &db.GetAccountT{
-        TenantKey: db.TenantKey{TenantID: tenantID},
-        ID:        accountID,
+        TenantID: tenantID,
+        ID:       accountID,
     },
     db.ReadFromPrimary(),
 )
