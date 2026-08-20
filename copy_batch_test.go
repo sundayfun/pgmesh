@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -255,7 +256,10 @@ func TestCopyBatcherCoalescesAndSplitsByRows(t *testing.T) {
 
 func TestCopyBatcherUsesDefaultMaxConcurrentBatches(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, testCopyBatcherUsesDefaultMaxConcurrentBatches)
+}
 
+func testCopyBatcherUsesDefaultMaxConcurrentBatches(t *testing.T) {
 	started := make(chan struct{}, pgmesh.DefaultCopyBatchMaxConcurrentBatches+1)
 	release := make(chan struct{})
 	var releaseOnce sync.Once
@@ -283,10 +287,11 @@ func TestCopyBatcherUsesDefaultMaxConcurrentBatches(t *testing.T) {
 			t.Fatal("timed out waiting for the default COPY workers")
 		}
 	}
+	synctest.Wait()
 	select {
 	case <-started:
 		t.Fatal("started more than the default maximum concurrent COPY operations")
-	case <-time.After(20 * time.Millisecond):
+	default:
 	}
 
 	release <- struct{}{}
@@ -304,7 +309,10 @@ func TestCopyBatcherUsesDefaultMaxConcurrentBatches(t *testing.T) {
 
 func TestCopyBatcherMergesQueuedLingerExpiredBatchesUpToRowLimit(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, testCopyBatcherMergesQueuedLingerExpiredBatchesUpToRowLimit)
+}
 
+func testCopyBatcherMergesQueuedLingerExpiredBatchesUpToRowLimit(t *testing.T) {
 	const linger = 5 * time.Millisecond
 	started := make(chan []int, 3)
 	releaseFirst := make(chan struct{})
@@ -334,11 +342,11 @@ func TestCopyBatcherMergesQueuedLingerExpiredBatchesUpToRowLimit(t *testing.T) {
 	assert.Equal(t, []int{1}, awaitCopyRows(t, started))
 
 	second := batcher.Submit(t.Context(), []int{2, 3})
-	time.Sleep(3 * linger)
+	synctest.Sleep(3 * linger)
 	third := batcher.Submit(t.Context(), []int{4, 5})
-	time.Sleep(3 * linger)
+	synctest.Sleep(3 * linger)
 	fourth := batcher.Submit(t.Context(), []int{6, 7})
-	time.Sleep(3 * linger)
+	synctest.Sleep(3 * linger)
 
 	close(releaseFirst)
 	assert.Equal(t, []int{2, 3, 4, 5}, awaitCopyRows(t, started))
@@ -361,7 +369,10 @@ func TestCopyBatcherMergesQueuedLingerExpiredBatchesUpToRowLimit(t *testing.T) {
 
 func TestCopyBatcherDoesNotMergeAcrossUnbatchedCopy(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, testCopyBatcherDoesNotMergeAcrossUnbatchedCopy)
+}
 
+func testCopyBatcherDoesNotMergeAcrossUnbatchedCopy(t *testing.T) {
 	const linger = 5 * time.Millisecond
 	started := make(chan []int, 4)
 	releaseFirst := make(chan struct{})
@@ -390,10 +401,10 @@ func TestCopyBatcherDoesNotMergeAcrossUnbatchedCopy(t *testing.T) {
 	first := batcher.Submit(t.Context(), []int{1})
 	assert.Equal(t, []int{1}, awaitCopyRows(t, started))
 	second := batcher.Submit(t.Context(), []int{2})
-	time.Sleep(3 * linger)
+	synctest.Sleep(3 * linger)
 	unbatched := batcher.SubmitUnbatched(t.Context(), []int{3})
 	third := batcher.Submit(t.Context(), []int{4})
-	time.Sleep(3 * linger)
+	synctest.Sleep(3 * linger)
 
 	close(releaseFirst)
 	assert.Equal(t, []int{2}, awaitCopyRows(t, started))
@@ -408,7 +419,10 @@ func TestCopyBatcherDoesNotMergeAcrossUnbatchedCopy(t *testing.T) {
 
 func TestCopyBatcherUsesDefaultLinger(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, testCopyBatcherUsesDefaultLinger)
+}
 
+func testCopyBatcherUsesDefaultLinger(t *testing.T) {
 	called := make(chan []int, 1)
 	batcher, err := pgmesh.NewCopyBatcher(
 		pgmesh.CopyBatchConfig{},
@@ -430,7 +444,10 @@ func TestCopyBatcherUsesDefaultLinger(t *testing.T) {
 
 func TestCopyBatcherObservesPhysicalBatchBoundaries(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, testCopyBatcherObservesPhysicalBatchBoundaries)
+}
 
+func testCopyBatcherObservesPhysicalBatchBoundaries(t *testing.T) {
 	observations := make(chan pgmesh.CopyBatchObservation, 4)
 	batcher, err := pgmesh.NewCopyBatcher(
 		pgmesh.CopyBatchConfig{MaxRowsPerBatch: 2, Linger: time.Hour},
