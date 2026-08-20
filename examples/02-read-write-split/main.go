@@ -78,7 +78,7 @@ func writeAccount(
 	accounts sharded.AccountsWriter,
 ) (*sharded.Account, error) {
 	account, err := accounts.UpsertAccount(ctx, &sharded.UpsertAccountT{
-		TenantKey:   sharded.TenantKey{TenantID: 42},
+		TenantID:    42,
 		ID:          2001,
 		DisplayName: "primary write",
 	})
@@ -116,8 +116,8 @@ func printReplicaRead(
 
 func accountKey(account *sharded.Account) *sharded.GetAccountT {
 	return &sharded.GetAccountT{
-		TenantKey: sharded.TenantKey{TenantID: account.TenantID},
-		ID:        account.ID,
+		TenantID: account.TenantID,
+		ID:       account.ID,
 	}
 }
 

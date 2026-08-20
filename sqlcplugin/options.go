@@ -69,7 +69,7 @@ func parseOptions(req *plugin.GenerateRequest) (*options, error) {
 			req.GetSettings().GetEngine(),
 		)
 	}
-	opts := &options{} //nolint:exhaustruct // Populated from JSON and normalized with defaults below.
+	opts := &options{} //nolint:exhaustruct_v5 // Populated from JSON and normalized with defaults below.
 	if len(req.GetPluginOptions()) > 0 {
 		decoder := json.NewDecoder(bytes.NewReader(req.GetPluginOptions()))
 		decoder.DisallowUnknownFields()

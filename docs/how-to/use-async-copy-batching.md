@@ -66,12 +66,12 @@ shard:
 
 ```go
 first := store.Accounts().CopyAccountsAsync(ctx, []*db.CopyAccountsT{{
-    TenantKey:   db.TenantKey{TenantID: 20},
+    TenantID:    20,
     ID:          1001,
     DisplayName: "Ada",
 }})
 second := store.Accounts().CopyAccountsAsync(ctx, []*db.CopyAccountsT{{
-    TenantKey:   db.TenantKey{TenantID: 100},
+    TenantID:    100,
     ID:          1002,
     DisplayName: "Linus",
 }})

@@ -62,12 +62,12 @@ func run(ctx context.Context) error {
 	baseID := time.Now().UnixNano()
 	seed := []*sharded.UpsertAccountT{
 		{
-			TenantKey:   sharded.TenantKey{TenantID: 20},
+			TenantID:    20,
 			ID:          baseID,
 			DisplayName: "account on shard zero",
 		},
 		{
-			TenantKey:   sharded.TenantKey{TenantID: 100},
+			TenantID:    100,
 			ID:          baseID + 1,
 			DisplayName: "account on shard one",
 		},

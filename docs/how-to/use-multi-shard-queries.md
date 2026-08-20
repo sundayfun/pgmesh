@@ -36,12 +36,12 @@ accounts, err := store.Accounts().ListAccountsByIDs(
     ctx,
     []*db.ListAccountsByIDsT{
         {
-            TenantKey: db.TenantKey{TenantID: firstTenantID},
-            ID:        firstAccountID,
+            TenantID: firstTenantID,
+            ID:       firstAccountID,
         },
         {
-            TenantKey: db.TenantKey{TenantID: secondTenantID},
-            ID:        secondAccountID,
+            TenantID: secondTenantID,
+            ID:       secondAccountID,
         },
     },
 )

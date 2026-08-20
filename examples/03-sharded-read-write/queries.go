@@ -15,7 +15,7 @@ func exerciseStores(
 	settings one.Settings,
 ) error {
 	account, err := accounts.UpsertAccount(ctx, &sharded.UpsertAccountT{
-		TenantKey:   sharded.TenantKey{TenantID: 100},
+		TenantID:    100,
 		ID:          3001,
 		DisplayName: "shard one",
 	})
@@ -25,8 +25,8 @@ func exerciseStores(
 	account, err = accounts.GetAccount(
 		ctx,
 		&sharded.GetAccountT{
-			TenantKey: sharded.TenantKey{TenantID: account.TenantID},
-			ID:        account.ID,
+			TenantID: account.TenantID,
+			ID:       account.ID,
 		},
 		sharded.ReadFromPrimary(),
 	)
@@ -38,7 +38,7 @@ func exerciseStores(
 	count, err := reports.CountAccounts(
 		ctx,
 		&sharded.CountAccountsT{
-			TenantKey: sharded.TenantKey{TenantID: account.TenantID},
+			TenantID: account.TenantID,
 		},
 		sharded.ReadFromPrimary(),
 	)

@@ -11,9 +11,10 @@ sqlc := sqlc-dir / "sqlc" # SQLC path
 ensure-sqlc: (_ensure-go-bin sqlc-pkg sqlc-dir)
 
 # golangci-lint settings.
-golangci-lint-version := "v2.12.2"
+golangci-lint-version := "v2.13.0"
 golangci-lint-pkg := "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@" + golangci-lint-version
-golangci-lint-dir := tooling-bin-dir / "golangci-lint-" + golangci-lint-version
+golangci-lint-go-version := `go env GOVERSION`
+golangci-lint-dir := tooling-bin-dir / "golangci-lint-" + golangci-lint-version + "-" + golangci-lint-go-version
 golangci-lint := golangci-lint-dir / "golangci-lint"
 
 # Ensure golangci-lint is installed.

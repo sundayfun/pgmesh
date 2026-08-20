@@ -96,8 +96,8 @@ type ListTenantAccountsT struct {
 accounts, err := queries.Accounts().ListTenantAccounts(
     ctx,
     &db.ListTenantAccountsT{
-        TenantKey: db.TenantKey{TenantID: tenantID},
-        Limit:     100,
+        TenantID: tenantID,
+        Limit:    100,
     },
 )
 ```
@@ -144,12 +144,12 @@ accounts, err := queries.Accounts().ListAccountsByIDs(
     ctx,
     []*db.ListAccountsByIDsT{
         {
-            TenantKey: db.TenantKey{TenantID: firstTenantID},
-            ID:        firstID,
+            TenantID: firstTenantID,
+            ID:       firstID,
         },
         {
-            TenantKey: db.TenantKey{TenantID: secondTenantID},
-            ID:        secondID,
+            TenantID: secondTenantID,
+            ID:       secondID,
         },
     },
 )
@@ -263,8 +263,8 @@ Business code always calls the same generated interface:
 
 ```go
 account, err := queries.Accounts().GetAccount(ctx, &db.GetAccountT{
-    TenantKey: db.TenantKey{TenantID: tenantID},
-    ID:        accountID,
+    TenantID: tenantID,
+    ID:       accountID,
 })
 ```
 
